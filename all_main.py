@@ -209,6 +209,14 @@ def load_ticker(ticker: str, data_dir: str = "data", num_levels: int = 10) -> di
     ob_path = f"{data_dir}/{ticker}_2012-06-21_34200000_57600000_orderbook_10.csv"
     return load_lobster_data(msg_path, ob_path, num_levels=num_levels)
 
+"""
+Sections 1-4 (load_lobster_data, compute_ofi/_side_ofi/_validate_ofi, rolling_sum,
+forward_return, compute_ic_table, decile_analysis, plot_decile_staircase,
+plot_ic_decay) are UNCHANGED from your last version. Paste them above this file,
+or import them, before running __main__ below. They are omitted here for brevity
+since nothing about them needed to change.
+"""
+
 
 # ---------------------------------------------------------------------------
 # 5. ARRIVAL INTENSITY CALIBRATION
@@ -365,11 +373,62 @@ def lookup_displayed_size(orderbook_row, price: float, side: str, num_levels: in
     return 0.0
 
 
+def compute_liquidity_profile(data: dict) -> dict:
+    """
+    Per-ticker diagnostics needed to normalize parameters across names with very
+    different liquidity/event-rate profiles -- this is what the cross-sectional
+    validation run revealed was missing. Report this table alongside your
+    cross-sectional results; it's the explanation for why fixed absolute
+    parameters (order_size, requote-by-event-count) blew up on some tickers.
+    """
+    ob = data["orderbook"]
+    msg = data["messages"]
+    avg_depth = float((ob["bid_size_1"].mean() + ob["ask_size_1"].mean()) / 2.0)
+    session_len = msg["time"].iloc[-1] - msg["time"].iloc[0]
+    event_rate_per_sec = len(msg) / session_len
+    avg_price = float(data["mid_price"].mean())
+    return {
+        "avg_touch_depth_shares": avg_depth,
+        "event_rate_per_sec": event_rate_per_sec,
+        "avg_mid_price": avg_price,
+        "session_length_sec": session_len,
+    }
+
+
+def derive_adaptive_kwargs(
+    data: dict,
+    depth_fraction: float = 0.08,
+    requote_seconds: float = 6.0,
+    min_order_size: int = 20,
+    max_order_size: int = 500,
+    inventory_limit_multiple: float = 5.0,
+) -> dict:
+    """
+    Converts a liquidity profile into ticker-specific order_size / inventory_limit,
+    and returns a fixed, ticker-independent requote_every_seconds. This replaces
+    hand-picked absolute constants that only happened to make sense for AAPL.
+    order_size = depth_fraction * typical touch depth (clipped to a sane range) --
+    small enough to be realistic (a real MM rarely posts a size that dominates the
+    book), large enough to be worth doing. inventory_limit scales off order_size so
+    every ticker gets a risk cap proportionate to its own typical clip size, not an
+    absolute share count tuned for one name's price/volume regime.
+    """
+    profile = compute_liquidity_profile(data)
+    order_size = int(np.clip(depth_fraction * profile["avg_touch_depth_shares"], min_order_size, max_order_size))
+    inventory_limit = int(order_size * inventory_limit_multiple)
+    return {
+        "order_size": order_size,
+        "inventory_limit": inventory_limit,
+        "requote_every_seconds": requote_seconds,
+        "_profile": profile,
+    }
+
+
 def run_backtest(
     data: dict,
     params: ASParams,
     order_size: int = 200,
-    requote_every_n_events: int = 100,
+    requote_every_seconds: float = 6.0,
     latency_events: int = 2,
     inventory_limit: int = 1000,
     ofi_window: int = 50,
@@ -404,6 +463,7 @@ def run_backtest(
     pending_quote_event = -1
 
     flatten_threshold = max(params.aggressive_inventory_frac * inventory_limit, 2 * order_size)
+    last_requote_time = -np.inf  # forces a requote on the very first event
 
     for i in range(n):
         t_remaining = max(session_end - ev_time[i], 1.0)
@@ -452,8 +512,12 @@ def run_backtest(
         if state.inventory <= -inventory_limit and our_ask is not None:
             our_ask = None
 
-        # --- 2. Recompute desired quotes periodically ---
-        if i % requote_every_n_events == 0:
+        # --- 2. Recompute desired quotes periodically (WALL-CLOCK cadence, not event
+        # count -- event rate varies ~5x across tickers, so a fixed event count meant a
+        # fixed cadence on AAPL but a much longer, staler cadence on lower-frequency
+        # names like GOOG, which is what produced GOOG's severe markout/adverse selection).
+        if ev_time[i] - last_requote_time >= requote_every_seconds:
+            last_requote_time = ev_time[i]
             sigma = sigma_series[i]
             z = ofi_z[i]
             best_bid, best_ask = best_bid_arr[i], best_ask_arr[i]
@@ -731,10 +795,26 @@ def run_cross_sectional_validation(
         except FileNotFoundError:
             print(f"  [skipped] data files for {tkr} not found in {data_dir}/")
             continue
-        state = run_backtest(data, params, **backtest_kwargs)
+
+        # NEW: order_size / inventory_limit are derived from THIS ticker's own liquidity
+        # profile (touch depth), not copied from AAPL. requote_every_seconds stays fixed
+        # in wall-clock time across all tickers -- that's the genuinely fair, untuned
+        # parameter (everything else in backtest_kwargs, e.g. latency_events, is still
+        # shared/untouched across tickers, consistent with "zero retuning").
+        adaptive = derive_adaptive_kwargs(data)
+        profile = adaptive.pop("_profile")
+        run_kwargs = {**backtest_kwargs, **adaptive}
+        print(f"  liquidity profile: avg_touch_depth={profile['avg_touch_depth_shares']:.0f} shares, "
+              f"event_rate={profile['event_rate_per_sec']:.1f}/sec, avg_price=${profile['avg_mid_price']:.2f}")
+        print(f"  derived: order_size={run_kwargs['order_size']}, inventory_limit={run_kwargs['inventory_limit']}, "
+              f"requote_every_seconds={run_kwargs['requote_every_seconds']}")
+
+        state = run_backtest(data, params, **run_kwargs)
         m = compute_backtest_metrics(state, mid_price=data["mid_price"])
         m["ticker"] = tkr
         m["is_train"] = (tkr == train_ticker)
+        m.update({f"profile_{k}": v for k, v in profile.items()})
+        m.update({f"used_{k}": v for k, v in run_kwargs.items()})
         rows.append(m)
         plot_backtest_results(state, ticker=tkr)
     return pd.DataFrame(rows)
@@ -830,7 +910,16 @@ if __name__ == "__main__":
     calibrate_arrival_intensity(data)  # printed for transparency, not used
 
     params = ASParams(gamma=0.1, kappa=3.2)
-    backtest_kwargs = dict(order_size=200, requote_every_n_events=100, latency_events=2, inventory_limit=1000)
+
+    # AAPL's own adaptive order_size/inventory_limit (same derivation used for every
+    # other ticker in cross-sectional validation -- keeps the train run consistent with
+    # the rest, rather than special-casing AAPL with different logic).
+    aapl_adaptive = derive_adaptive_kwargs(data)
+    profile = aapl_adaptive.pop("_profile")
+    print(f"\nAAPL liquidity profile: avg_touch_depth={profile['avg_touch_depth_shares']:.0f} shares, "
+          f"event_rate={profile['event_rate_per_sec']:.1f}/sec")
+    backtest_kwargs = dict(latency_events=2, **aapl_adaptive)
+    print(f"AAPL derived kwargs: {aapl_adaptive}")
 
     print("\n=== Ablation (AAPL, one mechanism at a time) ===")
     ablation = run_ablation(data, params, **backtest_kwargs)
