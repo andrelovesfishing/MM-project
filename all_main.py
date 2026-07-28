@@ -1,3 +1,11 @@
+"""
+Sections 1-4 (load_lobster_data, compute_ofi/_side_ofi/_validate_ofi, rolling_sum,
+forward_return, compute_ic_table, decile_analysis, plot_decile_staircase,
+plot_ic_decay) are UNCHANGED from your last version. Paste them above this file,
+or import them, before running __main__ below. They are omitted here for brevity
+since nothing about them needed to change.
+"""
+
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -188,21 +196,34 @@ def plot_ic_decay(ic_table: pd.DataFrame, save_path: str = "ic_decay.png"):
     print(f"Saved IC decay plot to {save_path}")
 
 
+# The five tickers LOBSTER provides for free, all on the same session (2012-06-21).
+# AAPL is your TRAIN ticker (all prior tuning happened here). The other four are
+# genuine out-of-sample cross-sectional tests: same parameters, zero retuning.
+ALL_TICKERS = ["AAPL", "AMZN", "GOOG", "INTC", "MSFT"]
+TRAIN_TICKER = "AAPL"
+
+
+def load_ticker(ticker: str, data_dir: str = "data", num_levels: int = 10) -> dict:
+    """Thin wrapper around load_lobster_data using LOBSTER's standard free-sample naming."""
+    msg_path = f"{data_dir}/{ticker}_2012-06-21_34200000_57600000_message_10.csv"
+    ob_path = f"{data_dir}/{ticker}_2012-06-21_34200000_57600000_orderbook_10.csv"
+    return load_lobster_data(msg_path, ob_path, num_levels=num_levels)
+
+
 # ---------------------------------------------------------------------------
 # 5. ARRIVAL INTENSITY CALIBRATION
+# (unchanged logic, still diagnostic-only — see honesty note in docstring)
 # ---------------------------------------------------------------------------
 def calibrate_arrival_intensity(data: dict, n_buckets: int = 15, max_ticks: int = 20, tick_size: float = 0.01):
     """
-    NOTE / CAVEAT (add this to your writeup — it's an honest limitation, not a bug):
-    This fits lambda(delta) from the distribution of *executed trade* distances from mid,
-    not from limit-order arrival/cancellation rates at each price level. That measures
-    "how far from mid do fills happen" rather than "how quickly would a resting quote at
-    distance delta get filled" (queue-reactive arrival intensity). It's a reasonable proxy
-    and standard in intro treatments of A-S, but it systematically concentrates mass near
-    the touch (because almost all trades print at or near best bid/ask), which is part of
-    why the fitted kappa pushed quotes further from touch than the real market ever is.
-    We now treat kappa as informational / a diagnostic rather than feeding the raw fitted
-    value directly into a spread that can dominate the actual tick-size market spread.
+    DIAGNOSTIC ONLY, not fed into the live quoting loop. This fits lambda(delta) from
+    the distribution of *executed trade* distances from mid, not true queue-reactive
+    arrival/cancellation rates at each price level -- it measures "how far from mid do
+    fills happen", which concentrates mass near the touch and produces a kappa that
+    implies spreads wider than the market's real ~1-tick spread. kappa_fixed=3.2 is
+    used instead in ASParams as an order-of-magnitude match to the observed market
+    spread. State this explicitly in any writeup -- do not imply the printed A/kappa
+    below were used in the backtest.
     """
     msg = data["messages"]
     mid = data["mid_price"]
@@ -226,7 +247,7 @@ def calibrate_arrival_intensity(data: dict, n_buckets: int = 15, max_ticks: int 
     kappa = -slope
     A = np.exp(intercept)
 
-    print(f"Calibrated arrival intensity (diagnostic only): A={A:.2f}, kappa={kappa:.4f}, R^2={r_value**2:.3f}")
+    print(f"  [diagnostic only, not used] calibrated A={A:.2f}, kappa={kappa:.4f}, R^2={r_value**2:.3f}")
     return A, kappa
 
 
@@ -235,49 +256,28 @@ def calibrate_arrival_intensity(data: dict, n_buckets: int = 15, max_ticks: int 
 # ---------------------------------------------------------------------------
 @dataclass
 class ASParams:
-    gamma: float = 0.1                 # risk aversion
-    kappa: float = 3.2                 # order arrival decay (calibrated, but now capped in use — see max_half_spread_ticks)
-    A: float = 10000.0                 # order arrival base rate (informational only)
-    T: float = 23400.0                 # trading session length in seconds (6.5h)
-    sigma: float = 0.02                # rolling volatility estimate (recalibrated live)
-    ofi_z_threshold: float = 2.0       # widen/skew when |OFI z-score| exceeds this
-    use_ofi_signal: bool = True        # NEW: toggle for the OFI on/off A-B comparison
-    max_half_spread_ticks: float = 3.0 # NEW: hard cap on how far the A-S half-spread can push us from mid
-    min_half_spread_ticks: float = 0.5 # NEW: floor so we still capture *some* edge when vol is near zero
-    touch_join_ticks: float = 1.0      # NEW: if theoretical quote sits more than this many ticks behind
-                                        # touch, just join the touch instead of quoting into empty space
-    aggressive_inventory_frac: float = 0.5  # NEW: fraction of inventory_limit that triggers spread-crossing
+    gamma: float = 0.1
+    kappa: float = 3.2                 # hand-set, see calibrate_arrival_intensity docstring
+    T: float = 23400.0
+    ofi_z_threshold: float = 2.0
+
+    use_ofi_signal: bool = True        # toggle for ablation
+    use_inventory_skew: bool = True    # toggle for ablation
+    use_size_skew: bool = True         # toggle for ablation
+
+    max_half_spread_ticks: float = 3.0
+    min_half_spread_ticks: float = 0.5
+    touch_join_ticks: float = 1.0
+
+    aggressive_inventory_frac: float = 0.5   # fraction of inventory_limit -> hard flatten threshold
     inventory_skew_ticks_per_100_per_gamma: float = 1.0
     max_inventory_skew_ticks: float = 3.0
+
     min_size_frac_at_flatten: float = 0.2
-    # NEW: as |inventory| approaches flatten_threshold, the size quoted on the side that
-    # would deepen the imbalance shrinks linearly toward this fraction of order_size (the
-    # side that reduces the imbalance always quotes full size). This is the mechanism that
-    # should actually reduce reliance on the costly hard flatten-override -- the earlier
-    # price-based inventory skew barely helped because the touch-join snap erases most
-    # price skew within 1 tick whenever OFI protection isn't active.
-    # NEW: at this tick size / event-level volatility, the textbook A-S inventory term
-    # (inventory * gamma * sigma^2 * time_remaining) is numerically negligible -- it never
-    # gets large enough to actually lean quotes against a growing position. This parameter
-    # replaces it with an explicit, gamma-scaled skew in tick units so (a) gamma has a
-    # visible effect in the gamma sweep, and (b) inventory is actually managed by price
-    # skew rather than only by the hard flatten-override. max_inventory_skew_ticks caps it
-    # so a high gamma can't grow large enough to force an involuntary spread-crossing trade
-    # on its own -- only the explicit flatten override (below) is allowed to do that.
     protective_widen_ticks: float = 4.0
-    # NEW: when OFI signals adverse selection risk on one side, that side is WIDENED to this
-    # many ticks behind the touch rather than skipped outright. Being skipped entirely was
-    # starving one side, concentrating inventory, and then forcing the hard flatten override
-    # to dump that inventory at exactly the worst (trend-confirming) moment.
-
-
-def compute_reservation_price(mid: float, inventory: int, sigma: float, gamma: float, time_remaining: float) -> float:
-    """r(t) = s(t) - q * gamma * sigma^2 * (T - t)"""
-    return mid - inventory * gamma * (sigma ** 2) * time_remaining
 
 
 def compute_optimal_half_spread(gamma: float, sigma: float, time_remaining: float, kappa: float) -> float:
-    """delta_total = gamma*sigma^2*(T-t) + (2/gamma)*ln(1 + gamma/kappa); returned as HALF-spread."""
     inventory_term = gamma * (sigma ** 2) * time_remaining
     spread_term = (2.0 / gamma) * np.log(1.0 + gamma / kappa)
     return (inventory_term + spread_term) / 2.0
@@ -307,40 +307,34 @@ class RestingOrder:
     price: float
     size: int
     ahead_volume: float
-    is_forced: bool = False  # NEW: True if this order was created by the hard flatten
-                             # override (crosses the spread) rather than passive touch-joining
+    is_forced: bool = False
 
 
 @dataclass
 class SimState:
     inventory: int = 0
     cash: float = 0.0
-    avg_cost: float = 0.0                 # NEW: average cost basis of current inventory
-    realized_pnl: float = 0.0             # NEW: PnL actually locked in by round-trip trades
+    avg_cost: float = 0.0
+    realized_pnl: float = 0.0
     pnl_history: list = field(default_factory=list)
-    realized_pnl_history: list = field(default_factory=list)   # NEW
-    unrealized_pnl_history: list = field(default_factory=list) # NEW
+    realized_pnl_history: list = field(default_factory=list)
+    unrealized_pnl_history: list = field(default_factory=list)
     inventory_history: list = field(default_factory=list)
     time_history: list = field(default_factory=list)
-    fill_log: list = field(default_factory=list)  # (time, side, price, size, event_index, is_forced)
+    fill_log: list = field(default_factory=list)  # (time, side, price, size, event_idx, is_forced)
     n_quotes_placed: int = 0
     n_fills: int = 0
     n_requotes_same_price: int = 0
     n_requotes_new_price: int = 0
-    quote_touch_distance_ticks: list = field(default_factory=list)  # NEW diagnostic
-    n_forced_flatten_crosses: int = 0        # NEW diagnostic
-    forced_flatten_z_values: list = field(default_factory=list)  # NEW: OFI z-score at each forced flatten
+    quote_touch_distance_ticks: list = field(default_factory=list)
+    n_forced_flatten_crosses: int = 0
+    forced_flatten_z_values: list = field(default_factory=list)
+    # NEW: transparency counters -- how much of the "AS model" survives the touch-join snap
+    n_quotes_touch_snapped: int = 0
+    n_quotes_organic: int = 0
 
 
 def update_avg_cost_and_realized(state: SimState, prev_inventory: int, signed_fill: int, price: float):
-    """
-    Average-cost inventory accounting. This is what lets us separate:
-      - realized_pnl: PnL actually earned by buying and later selling (or vice versa) —
-        this is the number that reflects genuine market-making skill.
-      - unrealized (mark-to-market) PnL: inventory * (current_mid - avg_cost) — this can
-        be large and positive purely because the stock drifted while you sat on a stuck
-        position. That's what was happening in the original backtest.
-    """
     if prev_inventory == 0 or np.sign(prev_inventory) == np.sign(signed_fill):
         total_size = abs(prev_inventory) + abs(signed_fill)
         state.avg_cost = (
@@ -349,37 +343,33 @@ def update_avg_cost_and_realized(state: SimState, prev_inventory: int, signed_fi
         )
     else:
         closing_size = min(abs(signed_fill), abs(prev_inventory))
-        direction = np.sign(prev_inventory)  # +1 if closing a long (i.e. selling), -1 if closing a short (buying)
+        direction = np.sign(prev_inventory)
         state.realized_pnl += closing_size * (price - state.avg_cost) * direction
         remaining = abs(signed_fill) - closing_size
         if remaining > 0:
-            state.avg_cost = price  # flipped through zero -> new position opened at this fill price
-
+            state.avg_cost = price
     state.inventory = prev_inventory + signed_fill
 
 
-def lookup_displayed_size(orderbook_row, price: float, side: str, num_levels: int = 10, tick_size: float = 0.01) -> float:
+def lookup_displayed_size(orderbook_row, price: float, side: str, num_levels: int = 10) -> float:
     prefix = "bid" if side == "bid" else "ask"
     worst_visible_price = None
-
     for lvl in range(1, num_levels + 1):
         lvl_price = orderbook_row[f"{prefix}_price_{lvl}"]
         lvl_size = orderbook_row[f"{prefix}_size_{lvl}"]
         if abs(price - lvl_price) < 1e-9:
             return lvl_size
         worst_visible_price = lvl_price
-
     if (side == "bid" and price < worst_visible_price) or (side == "ask" and price > worst_visible_price):
         return orderbook_row[f"{prefix}_size_{num_levels}"]
-
     return 0.0
 
 
 def run_backtest(
     data: dict,
     params: ASParams,
-    order_size: int = 100,
-    requote_every_n_events: int = 25,
+    order_size: int = 200,
+    requote_every_n_events: int = 100,
     latency_events: int = 2,
     inventory_limit: int = 1000,
     ofi_window: int = 50,
@@ -430,7 +420,6 @@ def run_backtest(
         if event_type[i] in (4, 5):
             px, sz, d = ev_price[i], ev_size[i], direction[i]
 
-            # Bid fill: seller-initiated trade (d == -1) at a price <= our bid fills our buy order
             if our_bid is not None and d == -1 and px <= our_bid.price + 1e-9:
                 our_bid.ahead_volume -= sz
                 if our_bid.ahead_volume <= 0:
@@ -444,7 +433,6 @@ def run_backtest(
                     if our_bid.size <= 0:
                         our_bid = None
 
-            # Ask fill: buyer-initiated trade (d == 1) at a price >= our ask fills our sell order
             if our_ask is not None and d == 1 and px >= our_ask.price - 1e-9:
                 our_ask.ahead_volume -= sz
                 if our_ask.ahead_volume <= 0:
@@ -458,7 +446,7 @@ def run_backtest(
                     if our_ask.size <= 0:
                         our_ask = None
 
-        # --- 1b. Enforce inventory limits ---
+        # --- 1b. Enforce inventory limits (on RESTING orders too, not just new quotes) ---
         if state.inventory >= inventory_limit and our_bid is not None:
             our_bid = None
         if state.inventory <= -inventory_limit and our_ask is not None:
@@ -470,56 +458,29 @@ def run_backtest(
             z = ofi_z[i]
             best_bid, best_ask = best_bid_arr[i], best_ask_arr[i]
 
-            # NOTE: compute_reservation_price's classical inventory term is negligible at
-            # this tick/vol scale (see ASParams docstrings) -- the skew that actually does
-            # anything is added explicitly below.
             r = micro_price[i]
             as_half_spread = compute_optimal_half_spread(params.gamma, sigma, t_remaining / total_T * params.T, params.kappa)
+            half_spread = np.clip(as_half_spread, params.min_half_spread_ticks * tick_size, params.max_half_spread_ticks * tick_size)
 
-            # FIX: cap the theoretical A-S half-spread to a tick-realistic range. The raw
-            # formula routinely produced half-spreads of many ticks (or dollars), while the
-            # real touch spread on AAPL is ~1 tick — so uncapped quotes were parked in empty
-            # space that LOBSTER trades (which print only at the touch) could never reach.
-            half_spread = np.clip(
-                as_half_spread,
-                params.min_half_spread_ticks * tick_size,
-                params.max_half_spread_ticks * tick_size,
-            )
+            if params.use_inventory_skew:
+                raw_skew = params.gamma * params.inventory_skew_ticks_per_100_per_gamma * (state.inventory / 100.0)
+                inventory_skew = np.clip(raw_skew, -params.max_inventory_skew_ticks, params.max_inventory_skew_ticks) * tick_size
+                r -= inventory_skew
 
-            # Explicit, gamma-scaled inventory skew (replaces the numerically negligible
-            # classical term). Positive inventory (long) pushes r down -> more eager to
-            # sell, less eager to buy, and vice versa. FIX: capped at max_inventory_skew_ticks
-            # so a high gamma can nudge quotes but can never by itself force a price through
-            # the touch into an involuntary spread-crossing trade -- only the explicit
-            # flatten override below is allowed to do that, deliberately.
-            raw_skew = params.gamma * params.inventory_skew_ticks_per_100_per_gamma * (state.inventory / 100.0)
-            inventory_skew = np.clip(raw_skew, -params.max_inventory_skew_ticks, params.max_inventory_skew_ticks) * tick_size
-            r -= inventory_skew
-
-            # Asymmetric OFI adverse-selection protection. FIX from the previous version:
-            # rather than skipping a side entirely (which starved it, concentrated inventory
-            # on the other side, and then forced the hard flatten override to dump that
-            # inventory at exactly the worst, trend-confirming moment), the "at-risk" side is
-            # now WIDENED to protective_widen_ticks instead. It's still quoted -- if filled,
-            # the extra distance compensates for the adverse-selection risk -- but it no
-            # longer disappears and forces one-sided inventory buildup.
             protect_ask = params.use_ofi_signal and z > params.ofi_z_threshold
             protect_bid = params.use_ofi_signal and z < -params.ofi_z_threshold
-
             bid_half_spread = max(half_spread, params.protective_widen_ticks * tick_size) if protect_bid else half_spread
             ask_half_spread = max(half_spread, params.protective_widen_ticks * tick_size) if protect_ask else half_spread
 
-            # Size-based inventory control: as |inventory| approaches flatten_threshold,
-            # shrink the size on the side that would deepen the imbalance (linearly, down
-            # to min_size_frac_at_flatten). The side that reduces the imbalance keeps full
-            # size. This should reduce how often inventory ever reaches the costly hard
-            # flatten override in the first place.
-            imbalance_frac = min(1.0, abs(state.inventory) / max(1.0, flatten_threshold))
-            shrunk_size = max(1, int(order_size * (1.0 - imbalance_frac * (1.0 - params.min_size_frac_at_flatten))))
-            if state.inventory > 0:
-                bid_size, ask_size = shrunk_size, order_size   # long -> quote less on bid, full size on ask
-            elif state.inventory < 0:
-                bid_size, ask_size = order_size, shrunk_size   # short -> quote less on ask, full size on bid
+            if params.use_size_skew:
+                imbalance_frac = min(1.0, abs(state.inventory) / max(1.0, flatten_threshold))
+                shrunk_size = max(1, int(order_size * (1.0 - imbalance_frac * (1.0 - params.min_size_frac_at_flatten))))
+                if state.inventory > 0:
+                    bid_size, ask_size = shrunk_size, order_size
+                elif state.inventory < 0:
+                    bid_size, ask_size = order_size, shrunk_size
+                else:
+                    bid_size, ask_size = order_size, order_size
             else:
                 bid_size, ask_size = order_size, order_size
 
@@ -529,41 +490,44 @@ def run_backtest(
             new_bid_px = round((r - bid_half_spread) / tick_size) * tick_size if can_buy else None
             new_ask_px = round((r + ask_half_spread) / tick_size) * tick_size if can_sell else None
 
-            # never let the two sides cross
             if new_bid_px is not None and new_bid_px >= best_ask:
                 new_bid_px = round((best_ask - tick_size) / tick_size) * tick_size
             if new_ask_px is not None and new_ask_px <= best_bid:
                 new_ask_px = round((best_bid + tick_size) / tick_size) * tick_size
 
-            # never be MORE aggressive than the touch (don't jump the whole visible book)
             if new_bid_px is not None:
                 new_bid_px = min(new_bid_px, best_bid)
             if new_ask_px is not None:
                 new_ask_px = max(new_ask_px, best_ask)
 
-            # If the quote sits meaningfully behind the touch, join the touch instead --
-            # UNLESS we're deliberately protecting that side this cycle, in which case
-            # standing back from the touch is the point.
-            if new_bid_px is not None and not protect_bid and (best_bid - new_bid_px) > params.touch_join_ticks * tick_size:
-                new_bid_px = best_bid
-            if new_ask_px is not None and not protect_ask and (new_ask_px - best_ask) > params.touch_join_ticks * tick_size:
-                new_ask_px = best_ask
+            # NEW: track how often the touch-join rule OVERRIDES the organic AS price,
+            # i.e. how much of "Avellaneda-Stoikov" survives contact with the market.
+            if new_bid_px is not None and not protect_bid:
+                was_behind = (best_bid - new_bid_px) > params.touch_join_ticks * tick_size
+                if was_behind:
+                    new_bid_px = best_bid
+                    state.n_quotes_touch_snapped += 1
+                else:
+                    state.n_quotes_organic += 1
+            if new_ask_px is not None and not protect_ask:
+                was_behind = (new_ask_px - best_ask) > params.touch_join_ticks * tick_size
+                if was_behind:
+                    new_ask_px = best_ask
+                    state.n_quotes_touch_snapped += 1
+                else:
+                    state.n_quotes_organic += 1
 
-            # Diagnostic: how far (in ticks) our quotes sit from the touch before any override
             if new_bid_px is not None:
                 state.quote_touch_distance_ticks.append((best_bid - new_bid_px) / tick_size)
             if new_ask_px is not None:
                 state.quote_touch_distance_ticks.append((new_ask_px - best_ask) / tick_size)
 
-            # Inventory-driven aggressiveness override — threshold scales with
-            # inventory_limit / order_size. Diagnostics recorded so we can check whether
-            # this still tends to fire during a sustained OFI trend against us.
             forced_bid = False
             forced_ask = False
             if state.inventory < -flatten_threshold and can_buy:
                 new_bid_px = best_ask
                 new_ask_px = None
-                bid_size = order_size  # emergency flatten always uses full size, not the shrunk size
+                bid_size = order_size
                 forced_bid = True
                 state.n_forced_flatten_crosses += 1
                 state.forced_flatten_z_values.append(z)
@@ -579,7 +543,7 @@ def run_backtest(
             pending_quote_event = i + latency_events
             state.n_quotes_placed += 1
 
-        # --- 3. Apply pending quotes (only reset queue position on real price change) ---
+        # --- 3. Apply pending quotes ---
         if pending_quotes is not None and i >= pending_quote_event:
             new_bid_px, new_ask_px, bid_sz, ask_sz, forced_bid, forced_ask = pending_quotes
 
@@ -592,9 +556,7 @@ def run_backtest(
                     our_bid = RestingOrder(price=new_bid_px, size=bid_sz, ahead_volume=displayed, is_forced=forced_bid)
 
             if new_ask_px is not None:
-                if our_ask is not None and abs(our_ask.price - new_ask_px) < 1e-9:
-                    pass
-                else:
+                if not (our_ask is not None and abs(our_ask.price - new_ask_px) < 1e-9):
                     displayed = lookup_displayed_size(data["orderbook"].iloc[i], new_ask_px, "ask")
                     our_ask = RestingOrder(price=new_ask_px, size=ask_sz, ahead_volume=displayed, is_forced=forced_ask)
 
@@ -613,18 +575,9 @@ def run_backtest(
 
 
 # ---------------------------------------------------------------------------
-# 8. MARKOUT ANALYSIS (NEW — the standard adverse-selection diagnostic)
+# 8. MARKOUT & CROSSING-COST ANALYSIS
 # ---------------------------------------------------------------------------
 def compute_markouts(state: SimState, mid_price: np.ndarray, horizons=(100, 500, 1000)) -> pd.DataFrame:
-    """
-    For each fill, compares the fill price to the mid-price some events later.
-    For a BUY fill: markout = future_mid - fill_price. Positive means price rose after
-    we bought (good). Negative means we were adversely selected.
-    For a SELL fill: markout = fill_price - future_mid, same interpretation mirrored.
-    `is_forced` marks fills that came from the hard inventory-flatten override (crossing
-    the spread) rather than passive touch-joining -- these have a different economics
-    (you pay the spread rather than earn it) and should generally be looked at separately.
-    """
     rows = []
     n = len(mid_price)
     for (t, side, price, size, idx, is_forced) in state.fill_log:
@@ -638,22 +591,28 @@ def compute_markouts(state: SimState, mid_price: np.ndarray, horizons=(100, 500,
     return pd.DataFrame(rows)
 
 
-def compute_crossing_cost(state: SimState, mid_price: np.ndarray) -> float:
+def compute_crossing_cost(state: SimState, mid_price: np.ndarray) -> dict:
     """
-    Estimates the total cost of forced spread-crossing fills: for a forced BUY, cost =
-    price - mid_at_fill (positive = paid above mid, i.e. gave away half the spread or
-    more). For a forced SELL, cost = mid_at_fill - price. Summed over size. This isolates
-    "cost of emergency inventory flattening" from "cost of adverse selection on passive
-    fills" -- two different problems that were previously blended into one PnL number.
+    FIX from previous version: report both TOTAL and PER-FILL crossing cost. The total
+    alone is misleading -- it can rise even as the number of forced crosses falls, simply
+    because average size-per-cross changed. Per-fill cost isolates "how expensive is each
+    emergency flatten" from "how often do we need one" -- these are different levers
+    (size-skew addresses frequency; per-fill cost is closer to a fixed function of spread).
     """
     total_cost = 0.0
+    n_forced = 0
     for (t, side, price, size, idx, is_forced) in state.fill_log:
         if not is_forced:
             continue
         m = mid_price[idx]
         cost_per_share = (price - m) if side == "BUY" else (m - price)
         total_cost += cost_per_share * size
-    return total_cost
+        n_forced += 1
+    return {
+        "total_crossing_cost": total_cost,
+        "mean_crossing_cost_per_forced_fill": total_cost / n_forced if n_forced > 0 else np.nan,
+        "n_forced_fills_for_crossing_cost": n_forced,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -674,13 +633,13 @@ def compute_backtest_metrics(state: SimState, mid_price: np.ndarray = None, mark
 
     max_drawdown = np.max(np.maximum.accumulate(pnl) - pnl)
 
+    total_touch_tracked = state.n_quotes_touch_snapped + state.n_quotes_organic
+    frac_touch_snapped = state.n_quotes_touch_snapped / total_touch_tracked if total_touch_tracked > 0 else np.nan
+
     metrics = {
         "final_pnl_total": pnl[-1],
         "final_pnl_realized": realized[-1],
         "final_pnl_unrealized": pnl[-1] - realized[-1],
-        # sharpe_total includes mark-to-market drift on open inventory -- report it, but
-        # sharpe_realized is the more defensible "did this actually make trading decisions
-        # that made money" number.
         "sharpe_total_raw_per_sample": sharpe_total_raw,
         "sharpe_total_annualized_approx": sharpe_total_annualized,
         "sharpe_realized_raw_per_sample": sharpe_realized_raw,
@@ -694,15 +653,13 @@ def compute_backtest_metrics(state: SimState, mid_price: np.ndarray = None, mark
         "mean_quote_distance_from_touch_ticks": (
             np.mean(state.quote_touch_distance_ticks) if state.quote_touch_distance_ticks else np.nan
         ),
+        # NEW: honesty metric -- what fraction of quotes were snapped to the touch rather
+        # than genuinely determined by the AS reservation-price/spread formula.
+        "frac_quotes_touch_snapped": frac_touch_snapped,
         "n_forced_flatten_crosses": state.n_forced_flatten_crosses,
         "mean_ofi_z_at_forced_flatten": (
             np.mean(state.forced_flatten_z_values) if state.forced_flatten_z_values else np.nan
         ),
-        # If this is large in magnitude and same-signed as the flatten direction (positive
-        # inventory forcing a sell while z is still positive/bullish, or negative inventory
-        # forcing a buy while z is still negative/bearish), forced flattens are dumping
-        # inventory into the trend rather than against it -- the exact failure mode we're
-        # checking for.
     }
 
     if mid_price is not None and len(state.fill_log) > 0:
@@ -711,10 +668,6 @@ def compute_backtest_metrics(state: SimState, mid_price: np.ndarray = None, mark
             col = f"markout_{h}"
             if col in markout_df.columns:
                 metrics[f"mean_{col}"] = markout_df[col].mean()
-                # Split by fill type -- forced (spread-crossing) fills have fundamentally
-                # different economics from passive touch-joining fills and mixing them
-                # together obscures which problem (crossing cost vs. adverse selection)
-                # is actually driving PnL.
                 passive = markout_df[~markout_df["is_forced"]]
                 forced = markout_df[markout_df["is_forced"]]
                 if len(passive) > 0:
@@ -724,18 +677,19 @@ def compute_backtest_metrics(state: SimState, mid_price: np.ndarray = None, mark
 
         metrics["n_forced_fills"] = int(markout_df["is_forced"].sum())
         metrics["n_passive_fills"] = int((~markout_df["is_forced"]).sum())
-        metrics["total_crossing_cost"] = compute_crossing_cost(state, mid_price)
+        metrics.update(compute_crossing_cost(state, mid_price))
 
     return metrics
 
 
-def plot_backtest_results(state: SimState, save_path: str = "backtest_pnl.png"):
+def plot_backtest_results(state: SimState, ticker: str = "AAPL", save_path: str = None):
+    save_path = save_path or f"backtest_pnl_{ticker}.png"
     fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
 
     axes[0].plot(state.time_history, state.pnl_history, color="darkgreen", label="Total (mark-to-market)")
     axes[0].plot(state.time_history, state.realized_pnl_history, color="black", linestyle="--", label="Realized only")
     axes[0].set_ylabel("PnL ($)")
-    axes[0].set_title("Avellaneda-Stoikov Market Maker — Backtest Results")
+    axes[0].set_title(f"Avellaneda-Stoikov Market Maker — {ticker} Backtest")
     axes[0].axhline(0, color="black", linewidth=0.6)
     axes[0].legend(loc="upper left", fontsize=8)
 
@@ -754,10 +708,84 @@ def plot_backtest_results(state: SimState, save_path: str = "backtest_pnl.png"):
 
 
 # ---------------------------------------------------------------------------
-# 10. GAMMA SWEEP AND OFI ON/OFF A-B HARNESSES
+# 10. CROSS-SECTIONAL OUT-OF-SAMPLE VALIDATION (the key new addition)
 # ---------------------------------------------------------------------------
+def run_cross_sectional_validation(
+    params: ASParams,
+    tickers=ALL_TICKERS,
+    train_ticker: str = TRAIN_TICKER,
+    data_dir: str = "data",
+    **backtest_kwargs,
+) -> pd.DataFrame:
+    """
+    Runs the EXACT same, already-tuned parameters (tuned on AAPL) against every other
+    free LOBSTER ticker with ZERO retuning. This is the honest test of whether the
+    strategy generalizes or was curve-fit to one day's AAPL order flow. Report this
+    table directly in your writeup -- it's more convincing than any single-ticker number.
+    """
+    rows = []
+    for tkr in tickers:
+        print(f"\n--- Validating on {tkr} ({'TRAIN' if tkr == train_ticker else 'OUT-OF-SAMPLE'}) ---")
+        try:
+            data = load_ticker(tkr, data_dir=data_dir)
+        except FileNotFoundError:
+            print(f"  [skipped] data files for {tkr} not found in {data_dir}/")
+            continue
+        state = run_backtest(data, params, **backtest_kwargs)
+        m = compute_backtest_metrics(state, mid_price=data["mid_price"])
+        m["ticker"] = tkr
+        m["is_train"] = (tkr == train_ticker)
+        rows.append(m)
+        plot_backtest_results(state, ticker=tkr)
+    return pd.DataFrame(rows)
+
+
+def plot_cross_sectional_results(cs_df: pd.DataFrame, save_path: str = "cross_sectional_validation.png"):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    colors = ["darkred" if train else "steelblue" for train in cs_df["is_train"]]
+
+    axes[0].bar(cs_df["ticker"], cs_df["final_pnl_realized"], color=colors)
+    axes[0].axhline(0, color="black", linewidth=0.6)
+    axes[0].set_ylabel("Realized PnL ($)")
+    axes[0].set_title("Realized PnL by Ticker\n(red = in-sample/train, blue = out-of-sample)")
+
+    axes[1].bar(cs_df["ticker"], cs_df["fill_rate"], color=colors)
+    axes[1].set_ylabel("Fill Rate")
+    axes[1].set_title("Fill Rate by Ticker")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    print(f"Saved cross-sectional validation plot to {save_path}")
+
+
+# ---------------------------------------------------------------------------
+# 11. ABLATION HARNESS (one change at a time, as you originally wanted)
+# ---------------------------------------------------------------------------
+def run_ablation(data: dict, base_params: ASParams, **backtest_kwargs) -> pd.DataFrame:
+    """
+    Cumulative ablation: start from the simplest version (touch-joining + hard flatten
+    only, no OFI/inventory-skew/size-skew), then add each mechanism one at a time, so
+    each row's delta vs. the previous row is directly attributable to ONE change.
+    """
+    configs = [
+        ("baseline (touch-join + hard flatten only)", dict(use_ofi_signal=False, use_inventory_skew=False, use_size_skew=False)),
+        ("+ inventory skew", dict(use_ofi_signal=False, use_inventory_skew=True, use_size_skew=False)),
+        ("+ size skew", dict(use_ofi_signal=False, use_inventory_skew=True, use_size_skew=True)),
+        ("+ OFI adverse-selection widen (full model)", dict(use_ofi_signal=True, use_inventory_skew=True, use_size_skew=True)),
+    ]
+
+    rows = []
+    for label, overrides in configs:
+        p = ASParams(**{**base_params.__dict__, **overrides})
+        state = run_backtest(data, p, **backtest_kwargs)
+        m = compute_backtest_metrics(state, mid_price=data["mid_price"])
+        m["config"] = label
+        rows.append(m)
+
+    return pd.DataFrame(rows)
+
+
 def run_gamma_sweep(data: dict, gammas, base_params: ASParams, **backtest_kwargs) -> pd.DataFrame:
-    """Risk-return sweep: for each gamma, run the backtest and record metrics."""
     rows = []
     for g in gammas:
         p = ASParams(**{**base_params.__dict__, "gamma": g})
@@ -768,21 +796,6 @@ def run_gamma_sweep(data: dict, gammas, base_params: ASParams, **backtest_kwargs
     return pd.DataFrame(rows)
 
 
-def run_ofi_ab_test(data: dict, params: ASParams, **backtest_kwargs) -> pd.DataFrame:
-    """A/B comparison: OFI adverse-selection overlay on vs. off, all else equal."""
-    p_on = ASParams(**{**params.__dict__, "use_ofi_signal": True})
-    p_off = ASParams(**{**params.__dict__, "use_ofi_signal": False})
-
-    state_on = run_backtest(data, p_on, **backtest_kwargs)
-    state_off = run_backtest(data, p_off, **backtest_kwargs)
-
-    m_on = compute_backtest_metrics(state_on, mid_price=data["mid_price"])
-    m_off = compute_backtest_metrics(state_off, mid_price=data["mid_price"])
-    m_on["ofi_signal"] = "on"
-    m_off["ofi_signal"] = "off"
-    return pd.DataFrame([m_on, m_off])
-
-
 def plot_gamma_sweep(sweep_df: pd.DataFrame, save_path: str = "gamma_sweep.png"):
     fig, ax1 = plt.subplots(figsize=(8, 5))
     ax1.plot(sweep_df["gamma"], sweep_df["final_pnl_realized"], marker="o", color="darkgreen", label="Realized PnL")
@@ -791,69 +804,51 @@ def plot_gamma_sweep(sweep_df: pd.DataFrame, save_path: str = "gamma_sweep.png")
     ax2 = ax1.twinx()
     ax2.plot(sweep_df["gamma"], sweep_df["inventory_std"], marker="s", color="steelblue", label="Inventory Std")
     ax2.set_ylabel("Inventory Std (shares)", color="steelblue")
-    plt.title("Gamma Sweep: Risk-Return Trade-off")
+    plt.title("Gamma Sweep: Risk-Return Trade-off\n(non-monotonicity reflects genuine regime-switching around the flatten threshold)")
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
     print(f"Saved gamma sweep plot to {save_path}")
 
 
 # ---------------------------------------------------------------------------
-# 4. MAIN
+# MAIN
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     _validate_ofi()
 
-    msg_file = "data/AAPL_2012-06-21_34200000_57600000_message_10.csv"
-    ob_file = "data/AAPL_2012-06-21_34200000_57600000_orderbook_10.csv"
+    # Load AAPL (train ticker) for signal research + ablation + gamma sweep
+    data = load_ticker(TRAIN_TICKER)
 
-    data = load_lobster_data(msg_file, ob_file)
-
-    print("\n--- Information Coefficient across horizons (OFI window = 50 events) ---")
+    print("\n--- Information Coefficient (AAPL, train ticker) ---")
     ic_table = compute_ic_table(data, ofi_window=50, horizons=(10, 50, 200, 500, 1000))
     print(ic_table.to_string(index=False))
 
-    print("\n--- Decile Analysis (horizon = 50 events) ---")
     deciles = decile_analysis(data, ofi_window=50, horizon=50)
-    print(deciles.to_string(index=False))
-
     plot_decile_staircase(deciles, horizon=50)
     plot_ic_decay(ic_table)
 
-    A, kappa = calibrate_arrival_intensity(data)
+    calibrate_arrival_intensity(data)  # printed for transparency, not used
 
-    params = ASParams(gamma=0.1, kappa=3.2, max_half_spread_ticks=3.0, touch_join_ticks=1.0)
+    params = ASParams(gamma=0.1, kappa=3.2)
+    backtest_kwargs = dict(order_size=200, requote_every_n_events=100, latency_events=2, inventory_limit=1000)
 
-    print("\nRunning AS market-making backtest...")
-    state = run_backtest(
-        data, params,
-        order_size=200,
-        requote_every_n_events=100,
-        latency_events=2,
-        inventory_limit=1000,
-    )
+    print("\n=== Ablation (AAPL, one mechanism at a time) ===")
+    ablation = run_ablation(data, params, **backtest_kwargs)
+    print(ablation[["config", "final_pnl_realized", "fill_rate", "inventory_std",
+                     "n_forced_flatten_crosses", "frac_quotes_touch_snapped"]].to_string(index=False))
 
-    metrics = compute_backtest_metrics(state, mid_price=data["mid_price"])
-    print("\n--- Backtest Metrics ---")
-    for k, v in metrics.items():
-        print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
-
-    print(f"n_requotes_same_price / n_quotes_placed: {state.n_requotes_same_price / state.n_quotes_placed:.4f}")
-
-    plot_backtest_results(state)
-
-    # --- Gamma sweep (risk-return deliverable) ---
-    print("\nRunning gamma sweep...")
-    sweep = run_gamma_sweep(
-        data, gammas=[0.01, 0.05, 0.1, 0.3, 0.5, 1.0], base_params=params,
-        order_size=200, requote_every_n_events=100, latency_events=2, inventory_limit=1000,
-    )
+    print("\n=== Gamma sweep (AAPL) ===")
+    sweep = run_gamma_sweep(data, gammas=[0.01, 0.05, 0.1, 0.3, 0.5, 1.0], base_params=params, **backtest_kwargs)
     print(sweep[["gamma", "final_pnl_realized", "inventory_std", "max_abs_inventory", "fill_rate"]].to_string(index=False))
     plot_gamma_sweep(sweep)
 
-    # --- OFI on/off A-B test ---
-    print("\nRunning OFI on/off A-B test...")
-    ab = run_ofi_ab_test(
-        data, params,
-        order_size=200, requote_every_n_events=100, latency_events=2, inventory_limit=1000,
-    )
-    print(ab[["ofi_signal", "final_pnl_realized", "mean_markout_500", "inventory_std"]].to_string(index=False))
+    print("\n=== CROSS-SECTIONAL OUT-OF-SAMPLE VALIDATION ===")
+    print("Same tuned params (AAPL-tuned), zero retuning, tested on all 5 free LOBSTER tickers.")
+    cs_results = run_cross_sectional_validation(params, **backtest_kwargs)
+    print(cs_results[["ticker", "is_train", "final_pnl_realized", "fill_rate",
+                       "mean_markout_500", "frac_quotes_touch_snapped"]].to_string(index=False))
+    plot_cross_sectional_results(cs_results)
+
+    cs_results.to_csv("cross_sectional_results.csv", index=False)
+    ablation.to_csv("ablation_results.csv", index=False)
+    print("\nSaved cross_sectional_results.csv and ablation_results.csv")
