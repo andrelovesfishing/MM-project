@@ -217,6 +217,7 @@ or import them, before running __main__ below. They are omitted here for brevity
 since nothing about them needed to change.
 """
 
+
 # ---------------------------------------------------------------------------
 # 5. ARRIVAL INTENSITY CALIBRATION
 # (unchanged logic, still diagnostic-only — see honesty note in docstring)
@@ -924,6 +925,44 @@ def plot_kappa_sweep(sweep_df: pd.DataFrame, save_path: str = "kappa_sweep.png")
     print(f"Saved kappa sweep plot to {save_path}")
 
 
+def run_touch_join_sweep(data: dict, touch_join_values, base_params: ASParams, **backtest_kwargs) -> pd.DataFrame:
+    """
+    The kappa sweep showed PnL is nearly flat across kappa once the organic spread
+    falls inside touch_join_ticks -- meaning touch_join_ticks, not kappa, is the
+    parameter actually determining behavior (it decides whether we ever rest behind
+    the touch for genuine passive spread capture, or always crowd it). This directly
+    tests whether resting further back ever pays, holding kappa fixed at the
+    calibrated value (0.32) so the organic spread has real room to differ from the
+    touch across the swept range.
+    """
+    rows = []
+    for tj in touch_join_values:
+        p = ASParams(**{**base_params.__dict__, "kappa": 0.32, "touch_join_ticks": tj})
+        state = run_backtest(data, p, **backtest_kwargs)
+        m = compute_backtest_metrics(state, mid_price=data["mid_price"])
+        m["touch_join_ticks"] = tj
+        rows.append(m)
+    return pd.DataFrame(rows)
+
+
+def plot_touch_join_sweep(sweep_df: pd.DataFrame, save_path: str = "touch_join_sweep.png"):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    axes[0].plot(sweep_df["touch_join_ticks"], sweep_df["final_pnl_realized"], marker="o", color="darkgreen")
+    axes[0].set_xlabel("touch_join_ticks (max distance behind touch before snapping)")
+    axes[0].set_ylabel("Realized PnL ($)")
+    axes[0].axhline(0, color="black", linewidth=0.6)
+    axes[0].set_title("Touch-Join Threshold vs Realized PnL")
+
+    axes[1].plot(sweep_df["touch_join_ticks"], sweep_df["fill_rate"], marker="s", color="steelblue", label="Fill rate")
+    axes[1].set_xlabel("touch_join_ticks")
+    axes[1].set_ylabel("Fill Rate")
+    axes[1].set_title("Touch-Join Threshold vs Fill Rate")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    print(f"Saved touch-join sweep plot to {save_path}")
+
+
 def run_gamma_sweep(data: dict, gammas, base_params: ASParams, **backtest_kwargs) -> pd.DataFrame:
     rows = []
     for g in gammas:
@@ -997,6 +1036,15 @@ if __name__ == "__main__":
     print(kappa_sweep[["kappa", "final_pnl_realized", "fill_rate", "frac_quotes_touch_snapped",
                         "mean_markout_500"]].to_string(index=False))
     plot_kappa_sweep(kappa_sweep)
+
+    print("\n=== Touch-join threshold sweep (AAPL, kappa fixed at calibrated 0.32) ===")
+    print("Does the strategy ever benefit from resting behind the touch, or does crowding it always win?")
+    tj_sweep = run_touch_join_sweep(
+        data, touch_join_values=[0.25, 0.5, 1.0, 2.0, 4.0, 8.0], base_params=params, **backtest_kwargs
+    )
+    print(tj_sweep[["touch_join_ticks", "final_pnl_realized", "fill_rate",
+                     "frac_quotes_touch_snapped", "mean_markout_500"]].to_string(index=False))
+    plot_touch_join_sweep(tj_sweep)
 
     print("\n=== CROSS-SECTIONAL OUT-OF-SAMPLE VALIDATION ===")
     print("Same tuned params (AAPL-tuned), zero retuning, tested on all 5 free LOBSTER tickers.")

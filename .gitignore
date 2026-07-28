@@ -5,3 +5,5 @@ figures/
 old_versions/
 
 *.png
+
+*.csv
