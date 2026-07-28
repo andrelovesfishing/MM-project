@@ -217,7 +217,6 @@ or import them, before running __main__ below. They are omitted here for brevity
 since nothing about them needed to change.
 """
 
-
 # ---------------------------------------------------------------------------
 # 5. ARRIVAL INTENSITY CALIBRATION
 # (unchanged logic, still diagnostic-only — see honesty note in docstring)
@@ -273,8 +272,8 @@ class ASParams:
     use_inventory_skew: bool = True    # toggle for ablation
     use_size_skew: bool = True         # toggle for ablation
 
-    max_half_spread_ticks: float = 3.0
-    min_half_spread_ticks: float = 0.5
+    max_half_spread_ticks: float = 12.0    # loosened from 3.0 now that units are fixed and kappa can act
+    min_half_spread_ticks: float = 0.25
     touch_join_ticks: float = 1.0
 
     aggressive_inventory_frac: float = 0.5   # fraction of inventory_limit -> hard flatten threshold
@@ -285,10 +284,26 @@ class ASParams:
     protective_widen_ticks: float = 4.0
 
 
-def compute_optimal_half_spread(gamma: float, sigma: float, time_remaining: float, kappa: float) -> float:
-    inventory_term = gamma * (sigma ** 2) * time_remaining
-    spread_term = (2.0 / gamma) * np.log(1.0 + gamma / kappa)
-    return (inventory_term + spread_term) / 2.0
+def compute_optimal_half_spread_ticks(gamma: float, kappa: float) -> float:
+    """
+    Returns the classical A-S spread term (2/gamma)*ln(1+gamma/kappa) interpreted in
+    TICK units -- consistent with calibrate_arrival_intensity(), which regresses
+    log(trade count) against tick-distance from mid, not dollar-distance.
+
+    FIX: previously this term's output was used directly as a DOLLAR price offset,
+    which silently inflated it by 1/tick_size (~100x). At gamma=0.1, that means the
+    raw term evaluated to roughly 4-1400 ticks across any plausible kappa (both the
+    hand-picked 3.2 and the calibrated 0.32), while max_half_spread_ticks=3.0 -- so
+    the clip, not kappa, was determining the spread. Any kappa change was a no-op.
+    With correct units, the calibrated kappa=0.32 now produces ~5.4 ticks -- inside
+    a realistic range -- so kappa finally has room to matter.
+
+    NOTE: the classical inventory_term (gamma*sigma^2*(T-t)) is intentionally
+    dropped -- it was already established negligible at this tick/vol scale, and
+    inventory is managed by the separate, explicit tick-based skew already in the
+    quoting loop. Including it here would just add a second silently-inert term.
+    """
+    return (2.0 / gamma) * np.log(1.0 + gamma / kappa)
 
 
 def rolling_volatility(mid_price: np.ndarray, window: int = 500) -> np.ndarray:
@@ -523,8 +538,12 @@ def run_backtest(
             best_bid, best_ask = best_bid_arr[i], best_ask_arr[i]
 
             r = micro_price[i]
-            as_half_spread = compute_optimal_half_spread(params.gamma, sigma, t_remaining / total_T * params.T, params.kappa)
-            half_spread = np.clip(as_half_spread, params.min_half_spread_ticks * tick_size, params.max_half_spread_ticks * tick_size)
+            spread_term_ticks = compute_optimal_half_spread_ticks(params.gamma, params.kappa)
+            half_spread = np.clip(
+                spread_term_ticks * tick_size,
+                params.min_half_spread_ticks * tick_size,
+                params.max_half_spread_ticks * tick_size,
+            )
 
             if params.use_inventory_skew:
                 raw_skew = params.gamma * params.inventory_skew_ticks_per_100_per_gamma * (state.inventory / 100.0)
@@ -865,6 +884,46 @@ def run_ablation(data: dict, base_params: ASParams, **backtest_kwargs) -> pd.Dat
     return pd.DataFrame(rows)
 
 
+def run_kappa_sweep(data: dict, kappas, base_params: ASParams, **backtest_kwargs) -> pd.DataFrame:
+    """
+    Now that kappa's units are fixed and it isn't structurally saturating the clip,
+    this is the actual test of "does calibrating kappa correctly matter" -- run it
+    across a range spanning your calibrated value (~0.32), the old hand-picked value
+    (3.2), and a few others, and compare PnL / fill_rate / frac_quotes_touch_snapped.
+    frac_quotes_touch_snapped is the key diagnostic here: it should now visibly vary
+    with kappa (higher kappa -> tighter natural spread -> more organic, non-snapped
+    quotes) where before it barely moved regardless of kappa.
+    """
+    rows = []
+    for k in kappas:
+        p = ASParams(**{**base_params.__dict__, "kappa": k})
+        state = run_backtest(data, p, **backtest_kwargs)
+        m = compute_backtest_metrics(state, mid_price=data["mid_price"])
+        m["kappa"] = k
+        rows.append(m)
+    return pd.DataFrame(rows)
+
+
+def plot_kappa_sweep(sweep_df: pd.DataFrame, save_path: str = "kappa_sweep.png"):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    axes[0].plot(sweep_df["kappa"], sweep_df["final_pnl_realized"], marker="o", color="darkgreen")
+    axes[0].set_xscale("log")
+    axes[0].set_xlabel("Kappa (log scale)")
+    axes[0].set_ylabel("Realized PnL ($)")
+    axes[0].set_title("Kappa vs Realized PnL")
+    axes[0].axhline(0, color="black", linewidth=0.6)
+
+    axes[1].plot(sweep_df["kappa"], sweep_df["frac_quotes_touch_snapped"], marker="s", color="steelblue")
+    axes[1].set_xscale("log")
+    axes[1].set_xlabel("Kappa (log scale)")
+    axes[1].set_ylabel("Fraction of Quotes Touch-Snapped")
+    axes[1].set_title("Kappa vs How Often the AS Formula Is Overridden")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    print(f"Saved kappa sweep plot to {save_path}")
+
+
 def run_gamma_sweep(data: dict, gammas, base_params: ASParams, **backtest_kwargs) -> pd.DataFrame:
     rows = []
     for g in gammas:
@@ -930,6 +989,14 @@ if __name__ == "__main__":
     sweep = run_gamma_sweep(data, gammas=[0.01, 0.05, 0.1, 0.3, 0.5, 1.0], base_params=params, **backtest_kwargs)
     print(sweep[["gamma", "final_pnl_realized", "inventory_std", "max_abs_inventory", "fill_rate"]].to_string(index=False))
     plot_gamma_sweep(sweep)
+
+    print("\n=== Kappa sweep (AAPL) — now that units are fixed, this should actually move ===")
+    kappa_sweep = run_kappa_sweep(
+        data, kappas=[0.1, 0.32, 1.0, 3.2, 10.0, 30.0], base_params=params, **backtest_kwargs
+    )
+    print(kappa_sweep[["kappa", "final_pnl_realized", "fill_rate", "frac_quotes_touch_snapped",
+                        "mean_markout_500"]].to_string(index=False))
+    plot_kappa_sweep(kappa_sweep)
 
     print("\n=== CROSS-SECTIONAL OUT-OF-SAMPLE VALIDATION ===")
     print("Same tuned params (AAPL-tuned), zero retuning, tested on all 5 free LOBSTER tickers.")
