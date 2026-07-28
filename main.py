@@ -300,6 +300,8 @@ class RestingOrder:
     price: float
     size: int
     ahead_volume: float
+    is_forced: bool = False  # NEW: True if this order was created by the hard flatten
+                             # override (crosses the spread) rather than passive touch-joining
 
 
 @dataclass
@@ -313,7 +315,7 @@ class SimState:
     unrealized_pnl_history: list = field(default_factory=list) # NEW
     inventory_history: list = field(default_factory=list)
     time_history: list = field(default_factory=list)
-    fill_log: list = field(default_factory=list)  # (time, side, price, size, event_index)
+    fill_log: list = field(default_factory=list)  # (time, side, price, size, event_index, is_forced)
     n_quotes_placed: int = 0
     n_fills: int = 0
     n_requotes_same_price: int = 0
@@ -430,7 +432,7 @@ def run_backtest(
                     update_avg_cost_and_realized(state, prev_inv, fill_size, our_bid.price)
                     state.cash -= fill_size * our_bid.price
                     state.n_fills += 1
-                    state.fill_log.append((ev_time[i], "BUY", our_bid.price, fill_size, i))
+                    state.fill_log.append((ev_time[i], "BUY", our_bid.price, fill_size, i, our_bid.is_forced))
                     our_bid.size -= fill_size
                     if our_bid.size <= 0:
                         our_bid = None
@@ -444,7 +446,7 @@ def run_backtest(
                     update_avg_cost_and_realized(state, prev_inv, -fill_size, our_ask.price)
                     state.cash += fill_size * our_ask.price
                     state.n_fills += 1
-                    state.fill_log.append((ev_time[i], "SELL", our_ask.price, fill_size, i))
+                    state.fill_log.append((ev_time[i], "SELL", our_ask.price, fill_size, i, our_ask.is_forced))
                     our_ask.size -= fill_size
                     if our_ask.size <= 0:
                         our_ask = None
@@ -535,24 +537,28 @@ def run_backtest(
             # Inventory-driven aggressiveness override — threshold scales with
             # inventory_limit / order_size. Diagnostics recorded so we can check whether
             # this still tends to fire during a sustained OFI trend against us.
+            forced_bid = False
+            forced_ask = False
             if state.inventory < -flatten_threshold and can_buy:
                 new_bid_px = best_ask
                 new_ask_px = None
+                forced_bid = True
                 state.n_forced_flatten_crosses += 1
                 state.forced_flatten_z_values.append(z)
             if state.inventory > flatten_threshold and can_sell:
                 new_ask_px = best_bid
                 new_bid_px = None
+                forced_ask = True
                 state.n_forced_flatten_crosses += 1
                 state.forced_flatten_z_values.append(z)
 
-            pending_quotes = (new_bid_px, new_ask_px, order_size)
+            pending_quotes = (new_bid_px, new_ask_px, order_size, forced_bid, forced_ask)
             pending_quote_event = i + latency_events
             state.n_quotes_placed += 1
 
         # --- 3. Apply pending quotes (only reset queue position on real price change) ---
         if pending_quotes is not None and i >= pending_quote_event:
-            new_bid_px, new_ask_px, sz = pending_quotes
+            new_bid_px, new_ask_px, sz, forced_bid, forced_ask = pending_quotes
 
             if new_bid_px is not None:
                 if our_bid is not None and abs(our_bid.price - new_bid_px) < 1e-9:
@@ -560,14 +566,14 @@ def run_backtest(
                 else:
                     state.n_requotes_new_price += 1
                     displayed = lookup_displayed_size(data["orderbook"].iloc[i], new_bid_px, "bid")
-                    our_bid = RestingOrder(price=new_bid_px, size=sz, ahead_volume=displayed)
+                    our_bid = RestingOrder(price=new_bid_px, size=sz, ahead_volume=displayed, is_forced=forced_bid)
 
             if new_ask_px is not None:
                 if our_ask is not None and abs(our_ask.price - new_ask_px) < 1e-9:
                     pass
                 else:
                     displayed = lookup_displayed_size(data["orderbook"].iloc[i], new_ask_px, "ask")
-                    our_ask = RestingOrder(price=new_ask_px, size=sz, ahead_volume=displayed)
+                    our_ask = RestingOrder(price=new_ask_px, size=sz, ahead_volume=displayed, is_forced=forced_ask)
 
             pending_quotes = None
 
@@ -590,16 +596,16 @@ def compute_markouts(state: SimState, mid_price: np.ndarray, horizons=(100, 500,
     """
     For each fill, compares the fill price to the mid-price some events later.
     For a BUY fill: markout = future_mid - fill_price. Positive means price rose after
-    we bought (good — we bought cheap ahead of a favorable move or just captured spread
-    without informed flow running us over). Negative means we were adversely selected.
+    we bought (good). Negative means we were adversely selected.
     For a SELL fill: markout = fill_price - future_mid, same interpretation mirrored.
-    This is exactly what a market-making desk uses to check whether a strategy is
-    capturing spread or bleeding to informed order flow.
+    `is_forced` marks fills that came from the hard inventory-flatten override (crossing
+    the spread) rather than passive touch-joining -- these have a different economics
+    (you pay the spread rather than earn it) and should generally be looked at separately.
     """
     rows = []
     n = len(mid_price)
-    for (t, side, price, size, idx) in state.fill_log:
-        row = {"time": t, "side": side, "price": price, "size": size}
+    for (t, side, price, size, idx, is_forced) in state.fill_log:
+        row = {"time": t, "side": side, "price": price, "size": size, "is_forced": is_forced}
         for h in horizons:
             j = idx + h
             if j < n:
@@ -607,6 +613,24 @@ def compute_markouts(state: SimState, mid_price: np.ndarray, horizons=(100, 500,
                 row[f"markout_{h}"] = (fut_mid - price) if side == "BUY" else (price - fut_mid)
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def compute_crossing_cost(state: SimState, mid_price: np.ndarray) -> float:
+    """
+    Estimates the total cost of forced spread-crossing fills: for a forced BUY, cost =
+    price - mid_at_fill (positive = paid above mid, i.e. gave away half the spread or
+    more). For a forced SELL, cost = mid_at_fill - price. Summed over size. This isolates
+    "cost of emergency inventory flattening" from "cost of adverse selection on passive
+    fills" -- two different problems that were previously blended into one PnL number.
+    """
+    total_cost = 0.0
+    for (t, side, price, size, idx, is_forced) in state.fill_log:
+        if not is_forced:
+            continue
+        m = mid_price[idx]
+        cost_per_share = (price - m) if side == "BUY" else (m - price)
+        total_cost += cost_per_share * size
+    return total_cost
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +688,20 @@ def compute_backtest_metrics(state: SimState, mid_price: np.ndarray = None, mark
             col = f"markout_{h}"
             if col in markout_df.columns:
                 metrics[f"mean_{col}"] = markout_df[col].mean()
+                # Split by fill type -- forced (spread-crossing) fills have fundamentally
+                # different economics from passive touch-joining fills and mixing them
+                # together obscures which problem (crossing cost vs. adverse selection)
+                # is actually driving PnL.
+                passive = markout_df[~markout_df["is_forced"]]
+                forced = markout_df[markout_df["is_forced"]]
+                if len(passive) > 0:
+                    metrics[f"mean_{col}_passive"] = passive[col].mean()
+                if len(forced) > 0:
+                    metrics[f"mean_{col}_forced"] = forced[col].mean()
+
+        metrics["n_forced_fills"] = int(markout_df["is_forced"].sum())
+        metrics["n_passive_fills"] = int((~markout_df["is_forced"]).sum())
+        metrics["total_crossing_cost"] = compute_crossing_cost(state, mid_price)
 
     return metrics
 
