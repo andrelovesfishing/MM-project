@@ -248,12 +248,20 @@ class ASParams:
                                         # touch, just join the touch instead of quoting into empty space
     aggressive_inventory_frac: float = 0.5  # NEW: fraction of inventory_limit that triggers spread-crossing
     inventory_skew_ticks_per_100_per_gamma: float = 1.0
+    max_inventory_skew_ticks: float = 3.0
     # NEW: at this tick size / event-level volatility, the textbook A-S inventory term
     # (inventory * gamma * sigma^2 * time_remaining) is numerically negligible -- it never
     # gets large enough to actually lean quotes against a growing position. This parameter
     # replaces it with an explicit, gamma-scaled skew in tick units so (a) gamma has a
     # visible effect in the gamma sweep, and (b) inventory is actually managed by price
-    # skew rather than only by the hard flatten-override.
+    # skew rather than only by the hard flatten-override. max_inventory_skew_ticks caps it
+    # so a high gamma can't grow large enough to force an involuntary spread-crossing trade
+    # on its own -- only the explicit flatten override (below) is allowed to do that.
+    protective_widen_ticks: float = 4.0
+    # NEW: when OFI signals adverse selection risk on one side, that side is WIDENED to this
+    # many ticks behind the touch rather than skipped outright. Being skipped entirely was
+    # starving one side, concentrating inventory, and then forcing the hard flatten override
+    # to dump that inventory at exactly the worst (trend-confirming) moment.
 
 
 def compute_reservation_price(mid: float, inventory: int, sigma: float, gamma: float, time_remaining: float) -> float:
@@ -311,6 +319,8 @@ class SimState:
     n_requotes_same_price: int = 0
     n_requotes_new_price: int = 0
     quote_touch_distance_ticks: list = field(default_factory=list)  # NEW diagnostic
+    n_forced_flatten_crosses: int = 0        # NEW diagnostic
+    forced_flatten_z_values: list = field(default_factory=list)  # NEW: OFI z-score at each forced flatten
 
 
 def update_avg_cost_and_realized(state: SimState, prev_inventory: int, signed_fill: int, price: float):
@@ -452,8 +462,8 @@ def run_backtest(
             best_bid, best_ask = best_bid_arr[i], best_ask_arr[i]
 
             # NOTE: compute_reservation_price's classical inventory term is negligible at
-            # this tick/vol scale (see ASParams.inventory_skew_ticks_per_100_per_gamma
-            # docstring) -- the skew that actually does anything is added explicitly below.
+            # this tick/vol scale (see ASParams docstrings) -- the skew that actually does
+            # anything is added explicitly below.
             r = micro_price[i]
             as_half_spread = compute_optimal_half_spread(params.gamma, sigma, t_remaining / total_T * params.T, params.kappa)
 
@@ -469,27 +479,32 @@ def run_backtest(
 
             # Explicit, gamma-scaled inventory skew (replaces the numerically negligible
             # classical term). Positive inventory (long) pushes r down -> more eager to
-            # sell, less eager to buy, and vice versa. Gamma now has a real, visible
-            # effect: higher gamma = tighter inventory control.
-            inventory_skew = (
-                params.gamma * params.inventory_skew_ticks_per_100_per_gamma
-                * (state.inventory / 100.0) * tick_size
-            )
+            # sell, less eager to buy, and vice versa. FIX: capped at max_inventory_skew_ticks
+            # so a high gamma can nudge quotes but can never by itself force a price through
+            # the touch into an involuntary spread-crossing trade -- only the explicit
+            # flatten override below is allowed to do that, deliberately.
+            raw_skew = params.gamma * params.inventory_skew_ticks_per_100_per_gamma * (state.inventory / 100.0)
+            inventory_skew = np.clip(raw_skew, -params.max_inventory_skew_ticks, params.max_inventory_skew_ticks) * tick_size
             r -= inventory_skew
 
-            # Asymmetric OFI adverse-selection protection: instead of shifting the whole
-            # reservation price (which barely changes which side gets adversely selected),
-            # skip quoting the side about to be run over by informed flow. If OFI says
-            # aggressive buying is happening (z > threshold), don't offer stock into that
-            # rally; if aggressive selling (z < -threshold), don't bid into the decline.
-            skip_ask = params.use_ofi_signal and z > params.ofi_z_threshold
-            skip_bid = params.use_ofi_signal and z < -params.ofi_z_threshold
+            # Asymmetric OFI adverse-selection protection. FIX from the previous version:
+            # rather than skipping a side entirely (which starved it, concentrated inventory
+            # on the other side, and then forced the hard flatten override to dump that
+            # inventory at exactly the worst, trend-confirming moment), the "at-risk" side is
+            # now WIDENED to protective_widen_ticks instead. It's still quoted -- if filled,
+            # the extra distance compensates for the adverse-selection risk -- but it no
+            # longer disappears and forces one-sided inventory buildup.
+            protect_ask = params.use_ofi_signal and z > params.ofi_z_threshold
+            protect_bid = params.use_ofi_signal and z < -params.ofi_z_threshold
+
+            bid_half_spread = max(half_spread, params.protective_widen_ticks * tick_size) if protect_bid else half_spread
+            ask_half_spread = max(half_spread, params.protective_widen_ticks * tick_size) if protect_ask else half_spread
 
             can_buy = state.inventory < inventory_limit
             can_sell = state.inventory > -inventory_limit
 
-            new_bid_px = round((r - half_spread) / tick_size) * tick_size if can_buy else None
-            new_ask_px = round((r + half_spread) / tick_size) * tick_size if can_sell else None
+            new_bid_px = round((r - bid_half_spread) / tick_size) * tick_size if can_buy else None
+            new_ask_px = round((r + ask_half_spread) / tick_size) * tick_size if can_sell else None
 
             # never let the two sides cross
             if new_bid_px is not None and new_bid_px >= best_ask:
@@ -503,11 +518,12 @@ def run_backtest(
             if new_ask_px is not None:
                 new_ask_px = max(new_ask_px, best_ask)
 
-            # FIX: if the theoretical quote still sits meaningfully behind the touch, join
-            # the touch instead. This is the change that should actually generate fills.
-            if new_bid_px is not None and (best_bid - new_bid_px) > params.touch_join_ticks * tick_size:
+            # If the quote sits meaningfully behind the touch, join the touch instead --
+            # UNLESS we're deliberately protecting that side this cycle, in which case
+            # standing back from the touch is the point.
+            if new_bid_px is not None and not protect_bid and (best_bid - new_bid_px) > params.touch_join_ticks * tick_size:
                 new_bid_px = best_bid
-            if new_ask_px is not None and (new_ask_px - best_ask) > params.touch_join_ticks * tick_size:
+            if new_ask_px is not None and not protect_ask and (new_ask_px - best_ask) > params.touch_join_ticks * tick_size:
                 new_ask_px = best_ask
 
             # Diagnostic: how far (in ticks) our quotes sit from the touch before any override
@@ -516,22 +532,19 @@ def run_backtest(
             if new_ask_px is not None:
                 state.quote_touch_distance_ticks.append((new_ask_px - best_ask) / tick_size)
 
-            # Apply the OFI side-skip -- but never skip the side we need to reduce a large
-            # existing position (that's what the hard flatten override below is for).
-            if skip_ask and state.inventory <= flatten_threshold:
-                new_ask_px = None
-            if skip_bid and state.inventory >= -flatten_threshold:
-                new_bid_px = None
-
-            # Inventory-driven aggressiveness override — FIX: threshold now scales with
-            # inventory_limit / order_size instead of a hardcoded 500 that was unreachable
-            # given how rarely the old logic filled anything.
+            # Inventory-driven aggressiveness override — threshold scales with
+            # inventory_limit / order_size. Diagnostics recorded so we can check whether
+            # this still tends to fire during a sustained OFI trend against us.
             if state.inventory < -flatten_threshold and can_buy:
                 new_bid_px = best_ask
                 new_ask_px = None
+                state.n_forced_flatten_crosses += 1
+                state.forced_flatten_z_values.append(z)
             if state.inventory > flatten_threshold and can_sell:
                 new_ask_px = best_bid
                 new_bid_px = None
+                state.n_forced_flatten_crosses += 1
+                state.forced_flatten_z_values.append(z)
 
             pending_quotes = (new_bid_px, new_ask_px, order_size)
             pending_quote_event = i + latency_events
@@ -634,6 +647,15 @@ def compute_backtest_metrics(state: SimState, mid_price: np.ndarray = None, mark
         "mean_quote_distance_from_touch_ticks": (
             np.mean(state.quote_touch_distance_ticks) if state.quote_touch_distance_ticks else np.nan
         ),
+        "n_forced_flatten_crosses": state.n_forced_flatten_crosses,
+        "mean_ofi_z_at_forced_flatten": (
+            np.mean(state.forced_flatten_z_values) if state.forced_flatten_z_values else np.nan
+        ),
+        # If this is large in magnitude and same-signed as the flatten direction (positive
+        # inventory forcing a sell while z is still positive/bullish, or negative inventory
+        # forcing a buy while z is still negative/bearish), forced flattens are dumping
+        # inventory into the trend rather than against it -- the exact failure mode we're
+        # checking for.
     }
 
     if mid_price is not None and len(state.fill_log) > 0:
