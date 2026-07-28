@@ -249,6 +249,13 @@ class ASParams:
     aggressive_inventory_frac: float = 0.5  # NEW: fraction of inventory_limit that triggers spread-crossing
     inventory_skew_ticks_per_100_per_gamma: float = 1.0
     max_inventory_skew_ticks: float = 3.0
+    min_size_frac_at_flatten: float = 0.2
+    # NEW: as |inventory| approaches flatten_threshold, the size quoted on the side that
+    # would deepen the imbalance shrinks linearly toward this fraction of order_size (the
+    # side that reduces the imbalance always quotes full size). This is the mechanism that
+    # should actually reduce reliance on the costly hard flatten-override -- the earlier
+    # price-based inventory skew barely helped because the touch-join snap erases most
+    # price skew within 1 tick whenever OFI protection isn't active.
     # NEW: at this tick size / event-level volatility, the textbook A-S inventory term
     # (inventory * gamma * sigma^2 * time_remaining) is numerically negligible -- it never
     # gets large enough to actually lean quotes against a growing position. This parameter
@@ -502,6 +509,20 @@ def run_backtest(
             bid_half_spread = max(half_spread, params.protective_widen_ticks * tick_size) if protect_bid else half_spread
             ask_half_spread = max(half_spread, params.protective_widen_ticks * tick_size) if protect_ask else half_spread
 
+            # Size-based inventory control: as |inventory| approaches flatten_threshold,
+            # shrink the size on the side that would deepen the imbalance (linearly, down
+            # to min_size_frac_at_flatten). The side that reduces the imbalance keeps full
+            # size. This should reduce how often inventory ever reaches the costly hard
+            # flatten override in the first place.
+            imbalance_frac = min(1.0, abs(state.inventory) / max(1.0, flatten_threshold))
+            shrunk_size = max(1, int(order_size * (1.0 - imbalance_frac * (1.0 - params.min_size_frac_at_flatten))))
+            if state.inventory > 0:
+                bid_size, ask_size = shrunk_size, order_size   # long -> quote less on bid, full size on ask
+            elif state.inventory < 0:
+                bid_size, ask_size = order_size, shrunk_size   # short -> quote less on ask, full size on bid
+            else:
+                bid_size, ask_size = order_size, order_size
+
             can_buy = state.inventory < inventory_limit
             can_sell = state.inventory > -inventory_limit
 
@@ -542,23 +563,25 @@ def run_backtest(
             if state.inventory < -flatten_threshold and can_buy:
                 new_bid_px = best_ask
                 new_ask_px = None
+                bid_size = order_size  # emergency flatten always uses full size, not the shrunk size
                 forced_bid = True
                 state.n_forced_flatten_crosses += 1
                 state.forced_flatten_z_values.append(z)
             if state.inventory > flatten_threshold and can_sell:
                 new_ask_px = best_bid
                 new_bid_px = None
+                ask_size = order_size
                 forced_ask = True
                 state.n_forced_flatten_crosses += 1
                 state.forced_flatten_z_values.append(z)
 
-            pending_quotes = (new_bid_px, new_ask_px, order_size, forced_bid, forced_ask)
+            pending_quotes = (new_bid_px, new_ask_px, bid_size, ask_size, forced_bid, forced_ask)
             pending_quote_event = i + latency_events
             state.n_quotes_placed += 1
 
         # --- 3. Apply pending quotes (only reset queue position on real price change) ---
         if pending_quotes is not None and i >= pending_quote_event:
-            new_bid_px, new_ask_px, sz, forced_bid, forced_ask = pending_quotes
+            new_bid_px, new_ask_px, bid_sz, ask_sz, forced_bid, forced_ask = pending_quotes
 
             if new_bid_px is not None:
                 if our_bid is not None and abs(our_bid.price - new_bid_px) < 1e-9:
@@ -566,14 +589,14 @@ def run_backtest(
                 else:
                     state.n_requotes_new_price += 1
                     displayed = lookup_displayed_size(data["orderbook"].iloc[i], new_bid_px, "bid")
-                    our_bid = RestingOrder(price=new_bid_px, size=sz, ahead_volume=displayed, is_forced=forced_bid)
+                    our_bid = RestingOrder(price=new_bid_px, size=bid_sz, ahead_volume=displayed, is_forced=forced_bid)
 
             if new_ask_px is not None:
                 if our_ask is not None and abs(our_ask.price - new_ask_px) < 1e-9:
                     pass
                 else:
                     displayed = lookup_displayed_size(data["orderbook"].iloc[i], new_ask_px, "ask")
-                    our_ask = RestingOrder(price=new_ask_px, size=sz, ahead_volume=displayed, is_forced=forced_ask)
+                    our_ask = RestingOrder(price=new_ask_px, size=ask_sz, ahead_volume=displayed, is_forced=forced_ask)
 
             pending_quotes = None
 
