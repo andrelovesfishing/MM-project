@@ -247,6 +247,13 @@ class ASParams:
     touch_join_ticks: float = 1.0      # NEW: if theoretical quote sits more than this many ticks behind
                                         # touch, just join the touch instead of quoting into empty space
     aggressive_inventory_frac: float = 0.5  # NEW: fraction of inventory_limit that triggers spread-crossing
+    inventory_skew_ticks_per_100_per_gamma: float = 1.0
+    # NEW: at this tick size / event-level volatility, the textbook A-S inventory term
+    # (inventory * gamma * sigma^2 * time_remaining) is numerically negligible -- it never
+    # gets large enough to actually lean quotes against a growing position. This parameter
+    # replaces it with an explicit, gamma-scaled skew in tick units so (a) gamma has a
+    # visible effect in the gamma sweep, and (b) inventory is actually managed by price
+    # skew rather than only by the hard flatten-override.
 
 
 def compute_reservation_price(mid: float, inventory: int, sigma: float, gamma: float, time_remaining: float) -> float:
@@ -444,7 +451,10 @@ def run_backtest(
             z = ofi_z[i]
             best_bid, best_ask = best_bid_arr[i], best_ask_arr[i]
 
-            r = compute_reservation_price(micro_price[i], state.inventory, sigma, params.gamma, t_remaining / total_T * params.T)
+            # NOTE: compute_reservation_price's classical inventory term is negligible at
+            # this tick/vol scale (see ASParams.inventory_skew_ticks_per_100_per_gamma
+            # docstring) -- the skew that actually does anything is added explicitly below.
+            r = micro_price[i]
             as_half_spread = compute_optimal_half_spread(params.gamma, sigma, t_remaining / total_T * params.T, params.kappa)
 
             # FIX: cap the theoretical A-S half-spread to a tick-realistic range. The raw
@@ -457,10 +467,23 @@ def run_backtest(
                 params.max_half_spread_ticks * tick_size,
             )
 
-            if params.use_ofi_signal and abs(z) > params.ofi_z_threshold:
-                widen_factor = 1.0 + 0.5 * (abs(z) - params.ofi_z_threshold)
-                half_spread = min(half_spread * widen_factor, 2 * params.max_half_spread_ticks * tick_size)
-                r += np.sign(z) * half_spread * 0.3
+            # Explicit, gamma-scaled inventory skew (replaces the numerically negligible
+            # classical term). Positive inventory (long) pushes r down -> more eager to
+            # sell, less eager to buy, and vice versa. Gamma now has a real, visible
+            # effect: higher gamma = tighter inventory control.
+            inventory_skew = (
+                params.gamma * params.inventory_skew_ticks_per_100_per_gamma
+                * (state.inventory / 100.0) * tick_size
+            )
+            r -= inventory_skew
+
+            # Asymmetric OFI adverse-selection protection: instead of shifting the whole
+            # reservation price (which barely changes which side gets adversely selected),
+            # skip quoting the side about to be run over by informed flow. If OFI says
+            # aggressive buying is happening (z > threshold), don't offer stock into that
+            # rally; if aggressive selling (z < -threshold), don't bid into the decline.
+            skip_ask = params.use_ofi_signal and z > params.ofi_z_threshold
+            skip_bid = params.use_ofi_signal and z < -params.ofi_z_threshold
 
             can_buy = state.inventory < inventory_limit
             can_sell = state.inventory > -inventory_limit
@@ -492,6 +515,13 @@ def run_backtest(
                 state.quote_touch_distance_ticks.append((best_bid - new_bid_px) / tick_size)
             if new_ask_px is not None:
                 state.quote_touch_distance_ticks.append((new_ask_px - best_ask) / tick_size)
+
+            # Apply the OFI side-skip -- but never skip the side we need to reduce a large
+            # existing position (that's what the hard flatten override below is for).
+            if skip_ask and state.inventory <= flatten_threshold:
+                new_ask_px = None
+            if skip_bid and state.inventory >= -flatten_threshold:
+                new_bid_px = None
 
             # Inventory-driven aggressiveness override — FIX: threshold now scales with
             # inventory_limit / order_size instead of a hardcoded 500 that was unreachable
