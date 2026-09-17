@@ -6,7 +6,7 @@ Ground rules, as agreed before Phase A:
 - **Tune on AAPL only,** then run the same settings unchanged on AMZN, GOOG, INTC and MSFT.
 - **Report the pessimistic–optimistic `FillModel` range,** not a single number (Phase B).
 - **One script per experiment** in `experiments/`, driven by a config dataclass. Results go to `results/<name>/` next to their config.
-- **Run order: 4, 1, 3, 2.** #4 is cheap and decides whether the OFI signal is real before #2 builds a strategy on it.
+- **Run order: 4, 1, 2, 3, 5.** #4 is cheap and decides whether the OFI signal is real before #2 builds a strategy on it. #5 was added after #1's result and runs last.
 - **Default `FillModel` stays as the original fill rules.** Every result here is reported at both presets anyway, and changing the default would break comparisons along the realism ladder.
 
 ## 1. Requote on events instead of a 6-second timer
@@ -31,6 +31,13 @@ Ground rules, as agreed before Phase A:
 
 **Test:** a new strategy component that shifts the reservation price by a multiple of OFI z, compared against `OFIGuard` and against no OFI use.
 
+**Result ([ofi-skew.md](ofi-skew.md)):** not supported. The signal is real but too small to trade on.
+- The skew (2 ticks per z, chosen on AAPL) beat the guard on total P&L on 3 of 5 tickers pessimistic and 4 of 5 optimistic. Per passive share it won only 3 of 5 and 1 of 5, so it misses the bar.
+- The per-share numbers barely move between skew, guard, and no OFI at all: usually within 0.1¢. Most of the P&L gaps on INTC and MSFT come from volume (the skew fills 10–25% fewer passive shares), not from better prices.
+- Why: one unit of OFI z predicts about 0.6¢ of mid move on AAPL over the next 50 events, and 1.7¢ when |z| > 2. That's against a 15¢ average spread and about 4¢ a share of adverse selection. On INTC and MSFT it predicts 0.02¢ against a 1-tick spread.
+- So statistical significance (#4) is not an edge. Newey-West t-stats of 13–33 come from hundreds of thousands of observations, not from a move large enough to pay for quoting around it.
+- Caveat: the chosen strength was the largest in the sweep. Going past it after seeing the results would be tuning on the answer, so it's left as is.
+
 ## 3. The 2x2: adaptive size vs requote cadence
 
 **Hypothesis:** the old cross-ticker improvement came from two changes made at the same time, and their effects were never separated:
@@ -47,3 +54,11 @@ Ground rules, as agreed before Phase A:
 **Test:** recompute the t-stats with Newey-West (HAC) standard errors, with the lag at least the forecast horizon. Report both. If significance survives, say so plainly; if it shrinks, lead with the corrected number.
 
 **Result ([ofi-significance.md](ofi-significance.md)):** supported. The naive t-stats were 3–11x too large, but the signal survives: Newey-West t-stats of 13–33 at h=50 on all five stocks.
+
+## 5. Inventory control under event requoting
+
+Added after #1's result, before running anything for it.
+
+**Hypothesis:** with 1-tick event requoting, the passive quotes are about break-even per share, but the extra volume trips the hard flatten far more often (AAPL forced shares 1.2k → 13k, crossing cost $90 → $971). Controlling inventory earlier and more gently should keep the per-share gain without paying the crossing cost.
+
+**Test:** on top of 1-tick event requoting, compare the Phase B inventory controls against stronger passive ones (inventory skew, size skew) and a later flatten threshold. The baseline here is event requoting at 1 tick, not the 6s timer, since the question only exists once #1's change is in.
