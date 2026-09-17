@@ -38,16 +38,36 @@ def forward_change(x, horizon: int):
     return out
 
 
-def ic_table(signal, price, horizons) -> pd.DataFrame:
-    """Spearman rank correlation between the signal and the price change h events ahead."""
+def spearman_ic_newey_west(x, y, lags: int) -> tuple[float, float]:
+    """Spearman IC and its t-stat with Newey-West (Bartlett) standard errors.
+
+    The IC is the mean of u = standardised rank(x) x standardised rank(y). Overlapping windows make
+    neighbouring u correlated, so the variance of that mean adds weighted autocovariances up to `lags`."""
+    rx, ry = (stats.rankdata(v) for v in (x, y))
+    u = ((rx - rx.mean()) / rx.std()) * ((ry - ry.mean()) / ry.std())
+    ic, n = u.mean(), len(u)
+    e = u - ic
+    long_run_var = e @ e / n
+    for k in range(1, lags + 1):
+        long_run_var += 2 * (1 - k / (lags + 1)) * (e[k:] @ e[:-k]) / n
+    return float(ic), float(ic / np.sqrt(long_run_var / n))
+
+
+def ic_table(signal, price, horizons, signal_window: int = 1) -> pd.DataFrame:
+    """Spearman rank correlation between the signal and the price change h events ahead.
+
+    t_stat assumes independent observations. t_stat_newey_west allows for the overlap: a signal summed
+    over `signal_window` events and an h-event forward change, so it uses h + signal_window lags."""
     rows = []
     for h in horizons:
         fwd = forward_change(price, h)
         ok = ~np.isnan(signal) & ~np.isnan(fwd)
         ic, p = stats.spearmanr(signal[ok], fwd[ok])
         n = int(ok.sum())
+        _, t_nw = spearman_ic_newey_west(signal[ok], fwd[ok], lags=h + signal_window)
         rows.append({"horizon_events": h, "n_obs": n, "spearman_IC": ic,
-                     "t_stat": ic * np.sqrt((n - 2) / (1 - ic**2)), "p_value": p})
+                     "t_stat": ic * np.sqrt((n - 2) / (1 - ic**2)), "p_value": p,
+                     "t_stat_newey_west": t_nw, "p_value_newey_west": 2 * stats.norm.sf(abs(t_nw))})
     return pd.DataFrame(rows)
 
 
