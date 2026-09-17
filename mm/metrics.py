@@ -84,7 +84,34 @@ def summary(result: Result, market: Market) -> dict:
     m["n_forced_fills"] = int(forced.sum())
     m["n_passive_fills"] = int((~forced).sum())
     m.update(crossing_cost(result, market))
+    m.update(attribution(result, market))
     return m
+
+
+def attribution(result: Result, market: Market, horizon: int = MARKOUT_HORIZONS[0]) -> dict:
+    """Where the P&L came from, in dollars. Each fill's contribution to P&L at the close splits exactly:
+
+        side x shares x (close mid - price) =  side x shares x (mid at fill - price)       spread (crossing if forced)
+                                             + side x shares x (mid h events on - mid)    adverse selection
+                                             + side x shares x (close mid - mid h on)      inventory
+
+    Summed over fills, the left side is cash + inventory x close mid: the total P&L."""
+    f = result.fills
+    if len(f["idx"]) == 0:
+        return {k: 0.0 for k in ("pnl_spread_passive", "pnl_crossing", "pnl_adverse_selection",
+                                 "pnl_inventory", "pnl_total_at_close")}
+    signed = f["side"] * f["size"]
+    mid = market.mid
+    at_fill, later, close = mid[f["idx"]], mid[np.minimum(f["idx"] + horizon, len(mid) - 1)], mid[-1]
+    spread = signed * (at_fill - f["price"])
+    forced = f["forced"].astype(bool)
+    return {
+        "pnl_spread_passive": float(dollars(spread[~forced].sum())),
+        "pnl_crossing": float(dollars(spread[forced].sum())),
+        "pnl_adverse_selection": float(dollars((signed * (later - at_fill)).sum())),
+        "pnl_inventory": float(dollars((signed * (close - later)).sum())),
+        "pnl_total_at_close": float(dollars((signed * (close - f["price"])).sum())),
+    }
 
 
 def crossing_cost(result: Result, market: Market) -> dict:
