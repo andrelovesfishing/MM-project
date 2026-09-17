@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="446" viewBox="0 0 720 446" role="img" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+<title>Where AAPL's P&amp;L came from: first version vs final setup</title>
+<desc>Spread earned: +$661 before, +$1,530 after; Adverse selection: -$1,213 before, -$1,630 after; Crossing cost: -$77 before, -$127 after; Inventory drift: +$119 before, +$516 after; Total: -$509 before, +$289 after.</desc>
+<rect width="720" height="446" rx="8" fill="#fcfcfb"/>
+<text x="24" y="34" font-size="16" text-anchor="start" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">Fresher quotes earned more than twice as much spread</text>
+<text x="24" y="56" font-size="12.5" text-anchor="start" fill="#52514e" style="font-variant-numeric:tabular-nums">Where AAPL's P&amp;L came from over one day, with cautious fill assumptions</text>
+<rect x="24" y="77" width="10" height="10" rx="2" fill="#b4b2a9"/>
+<text x="40" y="86" font-size="12" text-anchor="start" fill="#52514e" style="font-variant-numeric:tabular-nums">6s timer (first version)</text>
+<rect x="215.60000000000002" y="77" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="231.60000000000002" y="86" font-size="12" text-anchor="start" fill="#52514e" style="font-variant-numeric:tabular-nums">1-tick requote, flatten only past the limit</text>
+<line x1="170.0" x2="170.0" y1="106" y2="362" stroke="#e1e0d9" stroke-width="1"/>
+<text x="170.0" y="378" font-size="11" text-anchor="middle" fill="#898781" style="font-variant-numeric:tabular-nums">-$2,000</text>
+<line x1="296.5" x2="296.5" y1="106" y2="362" stroke="#e1e0d9" stroke-width="1"/>
+<text x="296.5" y="378" font-size="11" text-anchor="middle" fill="#898781" style="font-variant-numeric:tabular-nums">-$1,000</text>
+<line x1="423.0" x2="423.0" y1="106" y2="362" stroke="#c3c2b7" stroke-width="1"/>
+<text x="423.0" y="378" font-size="11" text-anchor="middle" fill="#898781" style="font-variant-numeric:tabular-nums">$0</text>
+<line x1="549.5" x2="549.5" y1="106" y2="362" stroke="#e1e0d9" stroke-width="1"/>
+<text x="549.5" y="378" font-size="11" text-anchor="middle" fill="#898781" style="font-variant-numeric:tabular-nums">+$1,000</text>
+<line x1="676.0" x2="676.0" y1="106" y2="362" stroke="#e1e0d9" stroke-width="1"/>
+<text x="676.0" y="378" font-size="11" text-anchor="middle" fill="#898781" style="font-variant-numeric:tabular-nums">+$2,000</text>
+<text x="24" y="130" font-size="12.5" text-anchor="start" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">Spread earned</text>
+<path d="M423.0,112 H503.658245 Q506.658245,112 506.658245,115 V125 Q506.658245,128 503.658245,128 H423.0 Z" fill="#b4b2a9"/>
+<text x="512.6582450000001" y="124" font-size="11.5" text-anchor="start" fill="#52514e" style="font-variant-numeric:tabular-nums">+$661</text>
+<path d="M423.0,131 H613.50958 Q616.50958,131 616.50958,134 V144 Q616.50958,147 613.50958,147 H423.0 Z" fill="#2a78d6"/>
+<text x="622.50958" y="143" font-size="11.5" text-anchor="start" fill="#52514e" style="font-variant-numeric:tabular-nums">+$1,530</text>
+<text x="24" y="182" font-size="12.5" text-anchor="start" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">Adverse selection</text>
+<path d="M423.0,164 H272.536525 Q269.536525,164 269.536525,167 V177 Q269.536525,180 272.536525,180 H423.0 Z" fill="#b4b2a9"/>
+<text x="263.536525" y="176" font-size="11.5" text-anchor="end" fill="#52514e" style="font-variant-numeric:tabular-nums">-$1,213</text>
+<path d="M423.0,183 H219.801205 Q216.801205,183 216.801205,186 V196 Q216.801205,199 219.801205,199 H423.0 Z" fill="#2a78d6"/>
+<text x="210.801205" y="195" font-size="11.5" text-anchor="end" fill="#52514e" style="font-variant-numeric:tabular-nums">-$1,630</text>
+<text x="24" y="234" font-size="12.5" text-anchor="start" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">Crossing cost</text>
+<path d="M423.0,216 H416.32022 Q413.32022,216 413.32022,219 V229 Q413.32022,232 416.32022,232 H423.0 Z" fill="#b4b2a9"/>
+<text x="407.32022" y="228" font-size="11.5" text-anchor="end" fill="#52514e" style="font-variant-numeric:tabular-nums">-$77</text>
+<path d="M423.0,235 H409.96992 Q406.96992,235 406.96992,238 V248 Q406.96992,251 409.96992,251 H423.0 Z" fill="#2a78d6"/>
+<text x="400.96992" y="247" font-size="11.5" text-anchor="end" fill="#52514e" style="font-variant-numeric:tabular-nums">-$127</text>
+<text x="24" y="286" font-size="12.5" text-anchor="start" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">Inventory drift</text>
+<path d="M423.0,268 H435.04085 Q438.04085,268 438.04085,271 V281 Q438.04085,284 435.04085,284 H423.0 Z" fill="#b4b2a9"/>
+<text x="444.04085" y="280" font-size="11.5" text-anchor="start" fill="#52514e" style="font-variant-numeric:tabular-nums">+$119</text>
+<path d="M423.0,287 H485.257555 Q488.257555,287 488.257555,290 V300 Q488.257555,303 485.257555,303 H423.0 Z" fill="#2a78d6"/>
+<text x="494.257555" y="299" font-size="11.5" text-anchor="start" fill="#52514e" style="font-variant-numeric:tabular-nums">+$516</text>
+<line x1="24" x2="696" y1="311" y2="311" stroke="#c3c2b7" stroke-width="1"/>
+<text x="24" y="338" font-size="12.5" text-anchor="start" font-weight="600" fill="#0b0b0b" style="font-variant-numeric:tabular-nums">Total</text>
+<path d="M423.0,320 H361.55584 Q358.55584,320 358.55584,323 V333 Q358.55584,336 361.55584,336 H423.0 Z" fill="#b4b2a9"/>
+<text x="352.55584" y="332" font-size="11.5" text-anchor="end" fill="#52514e" style="font-variant-numeric:tabular-nums">-$509</text>
+<path d="M423.0,339 H456.53826 Q459.53826,339 459.53826,342 V352 Q459.53826,355 456.53826,355 H423.0 Z" fill="#2a78d6"/>
+<text x="465.53826" y="351" font-size="11.5" text-anchor="start" fill="#52514e" style="font-variant-numeric:tabular-nums">+$289</text>
+<text x="24" y="412" font-size="11" text-anchor="start" fill="#898781" style="font-variant-numeric:tabular-nums">Adverse selection: how far the price moved against each fill over the next 100 order book events.</text>
+<text x="24" y="429" font-size="11" text-anchor="start" fill="#898781" style="font-variant-numeric:tabular-nums">Crossing cost: what forced sales and buybacks paid. Inventory drift: the rest of the price move to the close.</text>
+</svg>
