@@ -1,0 +1,85 @@
+"""Event loop: replay the session, route events to the fill model, ask the strategy for
+quotes, and apply them after a latency."""
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from mm.accounting import Ledger
+from mm.data import Market
+from mm.queue import ASK, BID, RestingOrder, on_event, queue_ahead
+from mm.strategy import Quotes, Strategy
+
+
+@dataclass(frozen=True)
+class Timer:
+    """Requote every `seconds` of market time."""
+    seconds: float
+
+    def due(self, market: Market, i: int, last: int) -> bool:
+        return last < 0 or market.time[i] - market.time[last] >= self.seconds
+
+
+@dataclass
+class Result:
+    fills: dict        # arrays: idx, side (+1 buy / -1 sell), price, size, forced
+    quotes: list       # (event index, Quotes) per requote decision
+    samples: dict      # arrays every sample_every events: idx, inventory, cash, realized, avg_cost
+
+
+def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: int = 2,
+        sample_every: int = 50) -> Result:
+    # Python lists index far faster than NumPy arrays inside a per-event loop.
+    etype, price, size, direction = (a.tolist() for a in
+                                     (market.event_type, market.price, market.size, market.direction))
+    ledger = Ledger()
+    orders = {BID: None, ASK: None}
+    fills, decisions, samples = [], [], []
+    pending, apply_at, last_quote = None, -1, -1
+    limit = strategy.inventory_limit
+
+    for i in range(len(market)):
+        for side in (BID, ASK):
+            order = orders[side]
+            if order is not None:
+                orders[side], filled = on_event(order, etype[i], price[i], size[i], direction[i])
+                if filled:
+                    ledger.fill(side, order.price, filled)
+                    fills.append((i, side, order.price, filled, order.forced))
+
+        # Pull a resting order that would take us past the inventory limit.
+        if ledger.inventory >= limit:
+            orders[BID] = None
+        if ledger.inventory <= -limit:
+            orders[ASK] = None
+
+        if requote.due(market, i, last_quote):
+            last_quote = i
+            pending = strategy.quote(market, i, ledger.inventory)
+            decisions.append((i, pending))
+            apply_at = i + latency_events
+
+        if pending is not None and i >= apply_at:
+            _apply(pending, orders, market, i)
+            pending = None
+
+        if i % sample_every == 0:
+            samples.append((i, ledger.inventory, ledger.cash, ledger.realized, ledger.avg_cost))
+
+    fill_cols = ("idx", "side", "price", "size", "forced")
+    sample_cols = ("idx", "inventory", "cash", "realized", "avg_cost")
+    return Result(
+        fills={c: np.array([f[k] for f in fills]) for k, c in enumerate(fill_cols)},
+        quotes=decisions,
+        samples={c: np.array([s[k] for s in samples]) for k, c in enumerate(sample_cols)},
+    )
+
+
+def _apply(quotes: Quotes, orders: dict, market: Market, i: int):
+    """Replace a resting order only when the price changes, so an unchanged quote keeps its queue place.
+    A side with no quote leaves any resting order in place."""
+    books = {BID: (market.bid_px[i], market.bid_sz[i]), ASK: (market.ask_px[i], market.ask_sz[i])}
+    for side, q in ((BID, quotes.bid), (ASK, quotes.ask)):
+        if q is None or (orders[side] is not None and orders[side].price == q.price):
+            continue
+        orders[side] = RestingOrder(side, q.price, q.size, queue_ahead(side, q.price, *books[side]), q.forced)
