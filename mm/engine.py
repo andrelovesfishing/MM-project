@@ -1,6 +1,7 @@
 """Event loop: replay the session, route events to the fill model, ask the strategy for
 quotes, and apply them after a latency."""
 
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -35,7 +36,7 @@ def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: 
     ledger = Ledger()
     orders = {BID: None, ASK: None}
     fills, decisions, samples = [], [], []
-    pending, apply_at, last_quote = None, -1, -1
+    in_flight, last_quote = deque(), -1  # (lands at event, quotes), oldest first
     limit = strategy.inventory_limit
 
     for i in range(len(market)):
@@ -51,14 +52,14 @@ def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: 
 
         if requote.due(market, i, last_quote):
             last_quote = i
-            pending = strategy.quote(market, i, ledger.inventory)
-            decisions.append((i, pending))
-            apply_at = i + latency_events
+            quotes = strategy.quote(market, i, ledger.inventory)
+            decisions.append((i, quotes))
+            in_flight.append((i + latency_events, quotes))
 
-        if pending is not None and i >= apply_at:
-            _apply(pending, orders, market, i)
+        # Each quote lands after its own latency, in the order sent, like messages to an exchange.
+        while in_flight and in_flight[0][0] <= i:
+            _apply(in_flight.popleft()[1], orders, market, i)
             _enforce_limit(orders, ledger.inventory, limit)  # the quote was decided before recent fills
-            pending = None
 
         if i % sample_every == 0:
             samples.append((i, ledger.inventory, ledger.cash, ledger.realized, ledger.avg_cost))

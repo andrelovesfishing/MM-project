@@ -75,7 +75,6 @@ def test_delayed_quote_cannot_breach_the_limit():
     assert r.samples["inventory"].max() <= 20
 
 
-@pytest.mark.xfail(strict=True, reason="known: requotes faster than the latency keep replacing the pending quote")
 def test_quotes_land_even_when_requotes_come_every_event():
     events = [NOOP, hit_bid(1000)] * 5
     m = make_market(events, bid_sz=0, times=[7.0 * k for k in range(10)])
@@ -87,3 +86,11 @@ def test_timer_requotes_on_market_time():
     events = [NOOP] * 5
     r = engine.run(make_market(events, times=[0.0, 1.0, 6.0, 6.5, 12.0]), FixedQuotes(), engine.Timer(6.0))
     assert [i for i, _ in r.quotes] == [0, 2, 4]
+
+
+def test_a_newer_quote_does_not_delay_one_already_in_flight():
+    # Decisions at events 0 and 1, latency 2: the first lands after event 2, so event 3's trade fills it.
+    events = [NOOP, NOOP, NOOP, hit_bid(1000)]
+    m = make_market(events, bid_sz=0, times=[0.0, 7.0, 7.5, 8.0])
+    r = engine.run(m, FixedQuotes(), engine.Timer(6.0), latency_events=2)
+    assert r.fills["idx"].tolist() == [3]
