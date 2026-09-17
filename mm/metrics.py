@@ -99,18 +99,23 @@ def attribution(result: Result, market: Market, horizon: int = MARKOUT_HORIZONS[
     f = result.fills
     if len(f["idx"]) == 0:
         return {k: 0.0 for k in ("pnl_spread_passive", "pnl_crossing", "pnl_adverse_selection",
-                                 "pnl_inventory", "pnl_total_at_close")}
+                                 "pnl_adverse_selection_passive", "pnl_inventory", "pnl_total_at_close",
+                                 "shares_passive", "shares_forced")}
     signed = f["side"] * f["size"]
     mid = market.mid
     at_fill, later, close = mid[f["idx"]], mid[np.minimum(f["idx"] + horizon, len(mid) - 1)], mid[-1]
     spread = signed * (at_fill - f["price"])
+    adverse = signed * (later - at_fill)
     forced = f["forced"].astype(bool)
     return {
         "pnl_spread_passive": float(dollars(spread[~forced].sum())),
         "pnl_crossing": float(dollars(spread[forced].sum())),
-        "pnl_adverse_selection": float(dollars((signed * (later - at_fill)).sum())),
+        "pnl_adverse_selection": float(dollars(adverse.sum())),
+        "pnl_adverse_selection_passive": float(dollars(adverse[~forced].sum())),  # a subset, not an extra part
         "pnl_inventory": float(dollars((signed * (close - later)).sum())),
         "pnl_total_at_close": float(dollars((signed * (close - f["price"])).sum())),
+        "shares_passive": int(f["size"][~forced].sum()),
+        "shares_forced": int(f["size"][forced].sum()),
     }
 
 

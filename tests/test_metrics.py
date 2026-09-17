@@ -43,6 +43,16 @@ def test_attribution_splits_a_fill_into_spread_adverse_selection_and_inventory()
     assert a["pnl_total_at_close"] == pytest.approx(10 * 300 / 10_000)
 
 
+def test_attribution_counts_shares_and_adverse_selection_on_passive_fills():
+    # Mid rises 100 then 200: the passive buy of 10 gains 100 each, the forced sell of 4 loses 200 each
+    m = moving_market([1_000_000, 1_000_100, 1_000_300])
+    r = fills_result([0, 1, 2], [1, -1, 1], [1_000_000] * 3, [10, 4, 7], [False, True, False])
+    a = attribution(r, m, horizon=1)
+    assert (a["shares_passive"], a["shares_forced"]) == (17, 4)
+    assert a["pnl_adverse_selection_passive"] == pytest.approx(10 * 100 / 10_000)
+    assert a["pnl_adverse_selection"] == pytest.approx((10 * 100 - 4 * 200) / 10_000)
+
+
 def test_attribution_components_sum_to_total_pnl():
     rng = np.random.default_rng(0)
     m = moving_market(1_000_000 + 100 * rng.integers(-20, 20, 300))
