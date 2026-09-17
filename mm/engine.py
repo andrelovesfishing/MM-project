@@ -87,11 +87,12 @@ def _apply(quotes: Quotes, orders: dict, market: Market, i: int) -> list:
     """Send quotes to the book as it is when they land. A quote that crosses executes at once against
     the far side and rests any remainder. Returns the immediate fills as (side, price, shares, forced).
     A passive quote replaces the resting order only when the price changes, so it keeps its queue place.
-    A side with no quote leaves any resting order in place."""
+    A side with no quote cancels its resting order."""
     books = {BID: (market.bid_px[i], market.bid_sz[i]), ASK: (market.ask_px[i], market.ask_sz[i])}
     taken = []
     for side, q in ((BID, quotes.bid), (ASK, quotes.ask)):
         if q is None:
+            orders[side] = None
             continue
         crossed = take(side, q.price, q.size, *books[-side])
         if crossed:

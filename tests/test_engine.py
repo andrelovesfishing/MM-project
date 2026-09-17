@@ -121,3 +121,18 @@ def test_forced_flatten_sweeps_deeper_levels_within_its_limit():
 def test_unfilled_part_of_a_cross_rests_at_its_limit():
     r = run([NOOP, (EXECUTE, ASK0, 1, BUY)], Flatten(size=230), latency_events=0)
     assert r.fills["size"].tolist() == [200, 1]
+
+
+@dataclass
+class BidThenNothing:
+    size: int = 20
+    inventory_limit: int = 1000
+
+    def quote(self, market, i, inventory):
+        return Quotes(Quote(BID0, self.size) if i == 0 else None, None)
+
+
+def test_a_side_left_unquoted_cancels_its_resting_order():
+    events = [NOOP, NOOP, hit_bid(1000)]
+    r = engine.run(make_market(events, bid_sz=0), BidThenNothing(), engine.Timer(1.0), latency_events=0)
+    assert len(r.fills["idx"]) == 0
