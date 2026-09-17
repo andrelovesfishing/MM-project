@@ -6,6 +6,7 @@ A backtest is only as honest as its fill simulation. Each row below changes one 
 - **Fills:** fill records; one order can fill in several pieces.
 - **Forced flattens:** requote decisions that cross the spread to cut inventory.
 - Dollars; AAPL is where the strategy was tuned, the other four are out of sample.
+- The resulting pessimistic–optimistic range, with P&L split by source, is in `docs/headline.md`.
 - Reproduce a row with `python -m experiments.realism "<change>"` at that commit.
 
 | Change | AAPL realized | AAPL total | AAPL fills | AAPL forced flattens | 5-ticker realized | 5-ticker total | 5-ticker fills |
