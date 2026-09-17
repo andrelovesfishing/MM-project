@@ -26,7 +26,7 @@ class Quote:
 class Quotes:
     bid: Quote | None
     ask: Quote | None
-    # Diagnostics on the passive prices, taken before any forced flatten replaces them
+    # Diagnostics on the passive quotes sent, so empty when a forced flatten replaces them
     touch_gaps_ticks: tuple = ()
     n_snapped: int = 0
     n_organic: int = 0
@@ -130,6 +130,11 @@ class ASQuoter:
         else:
             bid_size = ask_size = self.order_size
 
+        if inventory < -self.flatten_at and inventory < self.inventory_limit:
+            return Quotes(Quote(best_ask, self.order_size, forced=True), None)
+        if inventory > self.flatten_at and inventory > -self.inventory_limit:
+            return Quotes(None, Quote(best_bid, self.order_size, forced=True))
+
         bid = ask = None
         if inventory < self.inventory_limit:
             bid = min(min(round((r - bid_half) / TICK) * TICK, best_ask - TICK), best_bid)
@@ -156,11 +161,6 @@ class ASQuoter:
 
         bid_q = Quote(bid, bid_size) if bid is not None else None
         ask_q = Quote(ask, ask_size) if ask is not None else None
-        if inventory < -self.flatten_at and inventory < self.inventory_limit:
-            bid_q, ask_q = Quote(best_ask, self.order_size, forced=True), None
-        if inventory > self.flatten_at and inventory > -self.inventory_limit:
-            bid_q, ask_q = None, Quote(best_bid, self.order_size, forced=True)
-
         return Quotes(bid_q, ask_q, tuple(gaps), snapped, organic)
 
 

@@ -7,7 +7,7 @@ from mm.engine import Result
 from mm.strategy import ofi_z
 
 MARKOUT_HORIZONS = (100, 500, 1000)
-_ANNUALISE = 252 * 6.5 * 3600
+TRADING_SECONDS_PER_YEAR = 252 * 6.5 * 3600
 
 
 def pnl_series(result: Result, market: Market) -> dict:
@@ -33,10 +33,13 @@ def markouts(result: Result, market: Market, horizons=MARKOUT_HORIZONS) -> dict:
     return out
 
 
-def _sharpe(series):
-    changes = np.diff(series, prepend=series[0])
-    raw = np.mean(changes) / (np.std(changes) + 1e-9)
-    return raw, raw * np.sqrt(_ANNUALISE / max(1, len(series)))
+def sharpe_annualized(time, series, bar_seconds=60.0) -> float:
+    """Sharpe of P&L changes over fixed time bars, scaled by sqrt(bars per trading year).
+    Event samples are uneven in time, so they are resampled first. One day of data: indicative only."""
+    edges = np.arange(time[0], time[-1] + 1e-9, bar_seconds)
+    bars = np.diff(series[np.searchsorted(time, edges, side="right") - 1])
+    sd = np.std(bars)
+    return float(np.mean(bars) / sd * np.sqrt(TRADING_SECONDS_PER_YEAR / bar_seconds)) if sd > 0 else np.nan
 
 
 def summary(result: Result, market: Market) -> dict:
@@ -51,16 +54,12 @@ def summary(result: Result, market: Market) -> dict:
     forced_at = [i for i, q in result.quotes if (q.bid and q.bid.forced) or (q.ask and q.ask.forced)]
     z = ofi_z(market)
 
-    sharpe_total = _sharpe(pnl["total"])
-    sharpe_realized = _sharpe(pnl["realized"])
     m = {
         "final_pnl_total": pnl["total"][-1],
         "final_pnl_realized": pnl["realized"][-1],
         "final_pnl_unrealized": pnl["total"][-1] - pnl["realized"][-1],
-        "sharpe_total_raw_per_sample": sharpe_total[0],
-        "sharpe_total_annualized_approx": sharpe_total[1],
-        "sharpe_realized_raw_per_sample": sharpe_realized[0],
-        "sharpe_realized_annualized_approx": sharpe_realized[1],
+        "sharpe_total_annualized": sharpe_annualized(pnl["time"], pnl["total"]),
+        "sharpe_realized_annualized": sharpe_annualized(pnl["time"], pnl["realized"]),
         "max_drawdown": np.max(np.maximum.accumulate(pnl["total"]) - pnl["total"]),
         "max_abs_inventory": np.max(np.abs(pnl["inventory"])),
         "inventory_std": np.std(pnl["inventory"]),

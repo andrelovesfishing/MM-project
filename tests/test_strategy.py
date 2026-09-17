@@ -65,3 +65,8 @@ def test_no_bid_at_the_long_limit(market):
 def test_forced_flatten_crosses_to_the_far_touch(market):
     q = plain().quote(market, 0, -60)
     assert q.ask is None and (q.bid.price, q.bid.forced) == (ASK0, True)
+
+
+def test_touch_diagnostics_skip_passive_quotes_a_flatten_replaced(market):
+    q = plain(kappa=0.01).quote(market, 0, -60)  # both sides would snap, but only the cross is sent
+    assert (q.n_snapped, q.n_organic, q.touch_gaps_ticks) == (0, 0, ())

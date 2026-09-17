@@ -15,3 +15,4 @@ A backtest is only as honest as its fill simulation. Each row below changes one 
 | Forced flattens cross the spread at once, at the far side's prices | -505.31 | -505.67 | 2,788 | 71 | -3,856.59 | -3,865.31 | 9,130 |
 | A side with no new quote cancels its resting order (small, now that flattens fill at once) | -505.31 | -505.67 | 2,788 | 71 | -3,856.20 | -3,864.93 | 9,129 |
 | Requote at the same price: a smaller size keeps queue place, a larger one rejoins at the back (size skew now applies without a price move) | -470.33 | -470.69 | 2,792 | 68 | -3,815.76 | -3,824.40 | 9,128 |
+| Diagnostics: snap rate counts quotes actually sent; Sharpe from 1-minute bars (no P&L change; AAPL Sharpe −1.0 → −48.8, the old scaling hid a steady bleed) | -470.33 | -470.69 | 2,792 | 68 | -3,815.76 | -3,824.40 | 9,128 |
