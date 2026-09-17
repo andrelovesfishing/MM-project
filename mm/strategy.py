@@ -76,6 +76,19 @@ class OFIGuard:
         return ofi_z(market, self.window, self.z_window)[i]
 
 
+@dataclass(frozen=True)
+class OFISkew:
+    """Shift the reservation price towards where order flow imbalance predicts the mid is going."""
+    window: int = 50
+    z_window: int = 200
+    ticks_per_z: float = 0.5
+    max_ticks: float = 4.0
+
+    def shift_ticks(self, market: Market, i: int) -> float:
+        z = ofi_z(market, self.window, self.z_window)[i]
+        return float(np.clip(self.ticks_per_z * z, -self.max_ticks, self.max_ticks))
+
+
 def ofi_z(market: Market, window: int = 50, z_window: int = 200):
     return market.cached(("ofi_z", window, z_window),
                          lambda: rolling_zscore(rolling_sum(market.ofi, window), z_window))
@@ -101,6 +114,7 @@ class ASQuoter:
     inventory_skew: InventorySkew | None = field(default_factory=InventorySkew)
     size_skew: SizeSkew | None = field(default_factory=SizeSkew)
     ofi_guard: OFIGuard | None = field(default_factory=OFIGuard)
+    ofi_skew: OFISkew | None = None
 
     @property
     def flatten_at(self) -> float:
@@ -114,6 +128,8 @@ class ASQuoter:
                              self.min_half_spread_ticks, self.max_half_spread_ticks)) * TICK
         if self.inventory_skew:
             r -= self.inventory_skew.shift_ticks(self.gamma, inventory) * TICK
+        ofi_shift = self.ofi_skew.shift_ticks(market, i) if self.ofi_skew else 0.0
+        r += ofi_shift * TICK
 
         protect_bid = protect_ask = False
         bid_half = ask_half = half
@@ -142,15 +158,16 @@ class ASQuoter:
             ask = max(max(round((r + ask_half) / TICK) * TICK, best_bid + TICK), best_ask)
 
         # Join the touch rather than rest far behind it, unless the OFI guard pulled us back.
+        # The side the OFI skew pushes back may rest that much further out before snapping.
         gaps, snapped, organic = [], 0, 0
         join_gap = self.touch_join_ticks * TICK
         if bid is not None and not protect_bid:
-            if best_bid - bid > join_gap:
+            if best_bid - bid > join_gap + max(0.0, -ofi_shift) * TICK:
                 bid, snapped = best_bid, snapped + 1
             else:
                 organic += 1
         if ask is not None and not protect_ask:
-            if ask - best_ask > join_gap:
+            if ask - best_ask > join_gap + max(0.0, ofi_shift) * TICK:
                 ask, snapped = best_ask, snapped + 1
             else:
                 organic += 1

@@ -5,7 +5,7 @@ import pytest
 from conftest import ASK0, BID0, make_market
 
 from mm.data import BUY, SUBMIT
-from mm.strategy import ASQuoter, OFIGuard, SizeSkew, as_half_spread_ticks
+from mm.strategy import ASQuoter, OFIGuard, OFISkew, SizeSkew, as_half_spread_ticks
 
 
 # Book: bid x 300, ask x 200, one tick apart, so the micro-price sits 0.6 ticks above the bid.
@@ -70,3 +70,16 @@ def test_forced_flatten_crosses_to_the_far_touch(market):
 def test_touch_diagnostics_skip_passive_quotes_a_flatten_replaced(market):
     q = plain(kappa=0.01).quote(market, 0, -60)  # both sides would snap, but only the cross is sent
     assert (q.n_snapped, q.n_organic, q.touch_gaps_ticks) == (0, 0, ())
+
+
+def test_ofi_skew_moves_both_quotes_towards_the_predicted_price(market):
+    # Buying pressure (z=+3) lifts the reservation price 3 ticks: the bid stays pinned at the touch
+    # (it may not improve on it) and the ask backs off 3 ticks instead of being snapped back.
+    q = plain(ofi_skew=OFISkew(ticks_per_z=1.0, max_ticks=4.0)).quote(with_ofi_z(market, 3.0), 0, 0)
+    assert (q.bid.price, q.ask.price) == (BID0, ASK0 + 300)
+
+
+def test_ofi_skew_is_capped(market):
+    # Selling pressure of z=-3 would push the bid back 3 ticks; the cap stops it at 2.
+    q = plain(ofi_skew=OFISkew(ticks_per_z=1.0, max_ticks=2.0)).quote(with_ofi_z(market, -3.0), 0, 0)
+    assert (q.bid.price, q.ask.price) == (BID0 - 200, ASK0)
