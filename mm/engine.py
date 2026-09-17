@@ -22,6 +22,15 @@ class Timer:
 
 
 @dataclass(frozen=True)
+class EveryN:
+    """Requote every `events` market events, however much time they span."""
+    events: int
+
+    def due(self, market: Market, i: int, last: int) -> bool:
+        return last < 0 or i - last >= self.events
+
+
+@dataclass(frozen=True)
 class OnMove:
     """Requote once the micro-price has moved `ticks` since the last quote, or `max_seconds` have passed."""
     ticks: float

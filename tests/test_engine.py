@@ -89,6 +89,12 @@ def test_timer_requotes_on_market_time():
     assert [i for i, _ in r.quotes] == [0, 2, 4]
 
 
+def test_every_n_requotes_on_event_count_whatever_the_clock():
+    r = engine.run(make_market([NOOP] * 7, times=[0.0, 0.0, 0.0, 30.0, 30.0, 30.0, 30.0]), FixedQuotes(),
+                   engine.EveryN(3))
+    assert [i for i, _ in r.quotes] == [0, 3, 6]
+
+
 def _shifted_book(n, from_event, bid_sz=None, ticks=0):
     """A market whose micro-price moves at `from_event`: the book shifts up `ticks`, or the bid size changes."""
     m = make_market([NOOP] * n, times=[0.0] * n)
