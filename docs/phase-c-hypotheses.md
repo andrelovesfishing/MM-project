@@ -38,3 +38,5 @@ Ground rules, as agreed before Phase A:
 **Hypothesis:** the OFI IC t-stats (~133 at h=50) are hugely overstated. They treat about 400k overlapping, autocorrelated observations as independent.
 
 **Test:** recompute the t-stats with Newey-West (HAC) standard errors, with the lag at least the forecast horizon. Report both. If significance survives, say so plainly; if it shrinks, lead with the corrected number.
+
+**Result ([ofi-significance.md](ofi-significance.md)):** supported. The naive t-stats were 3–11x too large, but the signal survives: Newey-West t-stats of 13–33 at h=50 on all five stocks.
