@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from mm.accounting import Ledger
-from mm.data import Market
+from mm.data import TICK, Market
 from mm.queue import ASK, BID, FillModel, take
 from mm.strategy import Quotes, Strategy
 
@@ -19,6 +19,17 @@ class Timer:
 
     def due(self, market: Market, i: int, last: int) -> bool:
         return last < 0 or market.time[i] - market.time[last] >= self.seconds
+
+
+@dataclass(frozen=True)
+class OnMove:
+    """Requote once the micro-price has moved `ticks` since the last quote, or `max_seconds` have passed."""
+    ticks: float
+    max_seconds: float = 6.0
+
+    def due(self, market: Market, i: int, last: int) -> bool:
+        return (last < 0 or market.time[i] - market.time[last] >= self.max_seconds
+                or abs(market.micro[i] - market.micro[last]) >= self.ticks * TICK)
 
 
 @dataclass

@@ -89,6 +89,34 @@ def test_timer_requotes_on_market_time():
     assert [i for i, _ in r.quotes] == [0, 2, 4]
 
 
+def _shifted_book(n, from_event, bid_sz=None, ticks=0):
+    """A market whose micro-price moves at `from_event`: the book shifts up `ticks`, or the bid size changes."""
+    m = make_market([NOOP] * n, times=[0.0] * n)
+    m.bid_px[from_event:] += ticks * 100
+    m.ask_px[from_event:] += ticks * 100
+    if bid_sz is not None:
+        m.bid_sz[from_event:, 0] = bid_sz
+    return m
+
+
+def test_on_move_requotes_when_the_micro_price_moves_enough():
+    r = engine.run(_shifted_book(6, 3, ticks=1), FixedQuotes(), engine.OnMove(ticks=1.0))
+    assert [i for i, _ in r.quotes] == [0, 3]
+
+
+def test_on_move_ignores_a_smaller_move():
+    # Bid size 300 -> 50 pulls the micro-price 0.4 ticks towards the bid
+    r = engine.run(_shifted_book(6, 3, bid_sz=50), FixedQuotes(), engine.OnMove(ticks=0.5))
+    assert [i for i, _ in r.quotes] == [0]
+
+
+def test_on_move_still_requotes_on_the_timer():
+    events = [NOOP] * 5
+    r = engine.run(make_market(events, times=[0.0, 1.0, 6.0, 6.5, 12.0]), FixedQuotes(),
+                   engine.OnMove(ticks=1.0, max_seconds=6.0))
+    assert [i for i, _ in r.quotes] == [0, 2, 4]
+
+
 def test_a_newer_quote_does_not_delay_one_already_in_flight():
     # Decisions at events 0 and 1, latency 2: the first lands after event 2, so event 3's trade fills it.
     events = [NOOP, NOOP, NOOP, hit_bid(1000)]
