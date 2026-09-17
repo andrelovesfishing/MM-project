@@ -42,6 +42,8 @@ kappa 0.3215 → 0.3172. Same cause: float distances land on different sides of 
 
 ## Kept on purpose, to review in Phase B
 
+All resolved in Phase B, each measured in `docs/realism.md`: the engine and quoter defects are fixed, and the fill assumptions are `FillModel` switches.
+
 These behaviours were ported unchanged so parity could be checked. They look unrealistic and each changes results, so each should become a deliberate, measured change:
 
 - **Forced flattens don't cross.** A "cross" is a bid resting at the best ask with nothing queued ahead. It fills only when a later trade hits the bid side, instead of executing at once against the ask.

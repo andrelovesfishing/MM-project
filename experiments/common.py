@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from mm import data, engine, metrics
+from mm.queue import FillModel
 from mm.strategy import ASQuoter, adaptive_limits
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ class Setup:
     kappa: float = 3.2
     requote_seconds: float = 6.0
     latency_events: int = 2
+    fill_model: FillModel = FillModel()
 
 
 def load(ticker: str, setup: Setup) -> data.Market:
@@ -33,7 +35,8 @@ def quoter(market: data.Market, setup: Setup, **overrides) -> ASQuoter:
 
 
 def backtest(market: data.Market, strategy, setup: Setup) -> dict:
-    result = engine.run(market, strategy, engine.Timer(setup.requote_seconds), setup.latency_events)
+    result = engine.run(market, strategy, engine.Timer(setup.requote_seconds), setup.latency_events,
+                        fill_model=setup.fill_model)
     return metrics.summary(result, market)
 
 

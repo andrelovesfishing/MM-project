@@ -71,6 +71,17 @@ class Market:
     def ofi(self):
         return signals.ofi(self.best_bid, self.bid_sz[:, 0], self.best_ask, self.ask_sz[:, 0])
 
+    @cached_property
+    def submitted_at(self):
+        """For each event, the index of its order's submit event, or -1 if the order predates the session."""
+        submits = np.flatnonzero(self.event_type == SUBMIT)
+        if len(submits) == 0:
+            return np.full(len(self), -1)
+        by_id = np.argsort(self.order_id[submits], kind="stable")
+        ids, first = self.order_id[submits][by_id], submits[by_id]
+        pos = np.minimum(np.searchsorted(ids, self.order_id), len(ids) - 1)
+        return np.where(ids[pos] == self.order_id, first[pos], -1)
+
     def cached(self, key, compute):
         """Memoise a derived feature on this market, so strategies sharing it compute it once."""
         if key not in self._cache:

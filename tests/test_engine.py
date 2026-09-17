@@ -5,7 +5,8 @@ import pytest
 from conftest import ASK0, BID0, make_market
 
 from mm import engine
-from mm.data import BUY, EXECUTE, SELL, SUBMIT
+from mm.data import BUY, DELETE, EXECUTE, SELL, SUBMIT
+from mm.queue import FillModel
 from mm.strategy import Quote, Quotes
 
 
@@ -151,3 +152,20 @@ def test_requote_with_a_larger_size_loses_queue_place():
     events = [NOOP, hit_bid(100), hit_bid(210)]
     r = engine.run(make_market(events, bid_sz=300), GrowingBid(), engine.Timer(1.0), latency_events=0)
     assert len(r.fills["idx"]) == 0
+
+
+@pytest.mark.parametrize("cancels, fills", [("ahead", [10]), ("exact", [])])
+def test_engine_passes_order_ids_to_the_fill_model(cancels, fills):
+    # We join behind 300 at event 0. Order 77 joins behind us, then leaves: only "ahead" thinks we moved up.
+    events = [NOOP, (SUBMIT, BID0, 300, BUY), (DELETE, BID0, 300, BUY), hit_bid(10)]
+    m = make_market(events, bid_sz=300, order_ids=[1, 77, 77, 2])
+    r = engine.run(m, FixedQuotes(), engine.Timer(1e9), latency_events=0, fill_model=FillModel(cancels=cancels))
+    assert r.fills["size"].tolist() == fills
+
+
+def test_exact_cancels_still_move_us_up_for_orders_that_joined_before_us():
+    # Order 55 joins at event 0, before our quote lands after it, then leaves: 300 ahead of us is gone.
+    events = [(SUBMIT, BID0, 300, BUY), NOOP, (DELETE, BID0, 300, BUY), hit_bid(10)]
+    m = make_market(events, bid_sz=300, order_ids=[55, 1, 55, 2])
+    r = engine.run(m, FixedQuotes(), engine.Timer(1e9), latency_events=0, fill_model=FillModel(cancels="exact"))
+    assert r.fills["size"].tolist() == [10]

@@ -8,7 +8,7 @@ import numpy as np
 
 from mm.accounting import Ledger
 from mm.data import Market
-from mm.queue import ASK, BID, on_event, replace_order, take
+from mm.queue import ASK, BID, FillModel, take
 from mm.strategy import Quotes, Strategy
 
 
@@ -29,10 +29,10 @@ class Result:
 
 
 def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: int = 2,
-        sample_every: int = 50) -> Result:
+        sample_every: int = 50, fill_model: FillModel = FillModel()) -> Result:
     # Python lists index far faster than NumPy arrays inside a per-event loop.
-    etype, price, size, direction = (a.tolist() for a in
-                                     (market.event_type, market.price, market.size, market.direction))
+    etype, price, size, direction, submitted_at = (a.tolist() for a in (
+        market.event_type, market.price, market.size, market.direction, market.submitted_at))
     ledger = Ledger()
     orders = {BID: None, ASK: None}
     fills, decisions, samples = [], [], []
@@ -43,7 +43,8 @@ def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: 
         for side in (BID, ASK):
             order = orders[side]
             if order is not None:
-                orders[side], filled = on_event(order, etype[i], price[i], size[i], direction[i])
+                orders[side], filled = fill_model.on_event(order, etype[i], price[i], size[i], direction[i],
+                                                           submitted_at[i])
                 if filled:
                     ledger.fill(side, order.price, filled)
                     fills.append((i, side, order.price, filled, order.forced))
@@ -58,7 +59,7 @@ def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: 
 
         # Each quote lands after its own latency, in the order sent, like messages to an exchange.
         while in_flight and in_flight[0][0] <= i:
-            for side, px, qty, forced in _apply(in_flight.popleft()[1], orders, market, i):
+            for side, px, qty, forced in _apply(in_flight.popleft()[1], orders, market, i, fill_model):
                 ledger.fill(side, px, qty)
                 fills.append((i, side, px, qty, forced))
             _enforce_limit(orders, ledger.inventory, limit)  # the quote was decided before recent fills
@@ -83,10 +84,10 @@ def _enforce_limit(orders: dict, inventory: int, limit: int):
         orders[ASK] = None
 
 
-def _apply(quotes: Quotes, orders: dict, market: Market, i: int) -> list:
+def _apply(quotes: Quotes, orders: dict, market: Market, i: int, model: FillModel) -> list:
     """Send quotes to the book as it is when they land. A quote that crosses executes at once against
     the far side and rests any remainder. Returns the immediate fills as (side, price, shares, forced).
-    A passive quote keeps its queue place when only its size shrinks (mm.queue.replace_order).
+    A passive quote keeps its queue place when only its size shrinks (FillModel.replace_order).
     A side with no quote cancels its resting order."""
     books = {BID: (market.bid_px[i], market.bid_sz[i]), ASK: (market.ask_px[i], market.ask_sz[i])}
     taken = []
@@ -98,7 +99,7 @@ def _apply(quotes: Quotes, orders: dict, market: Market, i: int) -> list:
         if crossed:
             taken += [(side, px, qty, q.forced) for px, qty in crossed]
             left = q.size - sum(qty for _, qty in crossed)
-            orders[side] = replace_order(side, None, q.price, left, q.forced, *books[side]) if left else None
+            orders[side] = model.replace_order(side, None, q.price, left, q.forced, *books[side], i) if left else None
         else:
-            orders[side] = replace_order(side, orders[side], q.price, q.size, q.forced, *books[side])
+            orders[side] = model.replace_order(side, orders[side], q.price, q.size, q.forced, *books[side], i)
     return taken

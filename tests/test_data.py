@@ -21,3 +21,11 @@ def test_load_keeps_integer_prices_and_splits_book_levels(tmp_path):
     # micro leans to the thinner side: 100 on the bid, 200 on the ask -> closer to the bid
     assert np.isclose(m.micro[0], (100 * 5850100 + 200 * 5850000) / 300)
     assert data.dollars(m.mid[0]) == 585.005
+
+
+def test_submitted_at_finds_each_orders_submit_event_or_minus_one_if_before_the_open():
+    from conftest import make_market
+    from mm.data import BUY, DELETE, EXECUTE, SUBMIT
+    events = [(DELETE, 1, 1, BUY), (SUBMIT, 1, 1, BUY), (SUBMIT, 1, 1, BUY), (EXECUTE, 1, 1, BUY), (DELETE, 1, 1, BUY)]
+    m = make_market(events, order_ids=[5, 9, 3, 9, 3])
+    assert m.submitted_at.tolist() == [-1, 1, 2, 1, 2]
