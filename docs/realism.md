@@ -10,3 +10,4 @@ A backtest is only as honest as its fill simulation. Each row below changes one 
 | Change | AAPL realized | AAPL total | AAPL fills | AAPL forced flattens | 5-ticker realized | 5-ticker total | 5-ticker fills |
 |---|---|---|---|---|---|---|---|
 | Baseline: Phase A port of the old simulator | -532.94 | -533.30 | 2,779 | 95 | -3,943.51 | -3,952.24 | 9,071 |
+| Delayed quotes can't breach the inventory limit (no effect: forced flattens keep inventory near half the limit) | -532.94 | -533.30 | 2,779 | 95 | -3,943.51 | -3,952.24 | 9,071 |

@@ -47,11 +47,7 @@ def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: 
                     ledger.fill(side, order.price, filled)
                     fills.append((i, side, order.price, filled, order.forced))
 
-        # Pull a resting order that would take us past the inventory limit.
-        if ledger.inventory >= limit:
-            orders[BID] = None
-        if ledger.inventory <= -limit:
-            orders[ASK] = None
+        _enforce_limit(orders, ledger.inventory, limit)
 
         if requote.due(market, i, last_quote):
             last_quote = i
@@ -61,6 +57,7 @@ def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: 
 
         if pending is not None and i >= apply_at:
             _apply(pending, orders, market, i)
+            _enforce_limit(orders, ledger.inventory, limit)  # the quote was decided before recent fills
             pending = None
 
         if i % sample_every == 0:
@@ -73,6 +70,14 @@ def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: 
         quotes=decisions,
         samples={c: np.array([s[k] for s in samples]) for k, c in enumerate(sample_cols)},
     )
+
+
+def _enforce_limit(orders: dict, inventory: int, limit: int):
+    """Pull a resting order that would take us past the inventory limit."""
+    if inventory >= limit:
+        orders[BID] = None
+    if inventory <= -limit:
+        orders[ASK] = None
 
 
 def _apply(quotes: Quotes, orders: dict, market: Market, i: int):

@@ -67,7 +67,6 @@ def test_requote_at_same_price_keeps_queue_place():
     assert r.fills["size"].tolist() == [10]
 
 
-@pytest.mark.xfail(strict=True, reason="known: a delayed quote can land after the limit is hit (docs/parity.md)")
 def test_delayed_quote_cannot_breach_the_limit():
     events = [NOOP, NOOP, NOOP, NOOP, NOOP, hit_bid(1000), NOOP, hit_bid(1000)]
     m = make_market(events, bid_sz=0, times=[0, 1, 2, 3, 10, 10.5, 11, 12])

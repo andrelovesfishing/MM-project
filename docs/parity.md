@@ -10,6 +10,8 @@ To reproduce:
 2. Replace the two touch-join comparisons with `round((best_bid - new_bid_px) / tick_size, 6) > params.touch_join_ticks` (and the ask-side equivalent).
 3. Run it, then run `python -m experiments.parity <its output dir>`.
 
+`experiments/parity.py` was removed once Phase B started changing results on purpose (`docs/realism.md`). It is at commit `ad8208a`.
+
 ## Differences from the original run, and why
 
 ### 1. Touch-snap rule: float noise
