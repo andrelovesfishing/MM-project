@@ -1,7 +1,9 @@
 data/
-
 figures/
-
 old_versions/
-
 *.png
+*.csv
+.claude
+results/
+__pycache__/
+.pytest_cache/

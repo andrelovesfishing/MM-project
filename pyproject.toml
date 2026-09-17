@@ -1,0 +1,16 @@
+[project]
+name = "mm"
+version = "0.2.0"
+description = "Avellaneda-Stoikov market maker backtested on LOBSTER order book data"
+requires-python = ">=3.11"
+dependencies = ["numpy", "pandas", "polars", "scipy"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["mm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
