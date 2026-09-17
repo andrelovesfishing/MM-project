@@ -70,3 +70,11 @@ Added after #1's result, before running anything for it.
 **Hypothesis:** with 1-tick event requoting, the passive quotes are about break-even per share, but the extra volume trips the hard flatten far more often (AAPL forced shares 1.2k → 13k, crossing cost $90 → $971). Controlling inventory earlier and more gently should keep the per-share gain without paying the crossing cost.
 
 **Test:** on top of 1-tick event requoting, compare the Phase B inventory controls against stronger passive ones (inventory skew, size skew) and a later flatten threshold. The baseline here is event requoting at 1 tick, not the 6s timer, since the question only exists once #1's change is in.
+
+**Result ([inventory-control.md](inventory-control.md)):** supported. Event requoting plus flattening only past the hard limit is the first setup that beats the Phase B baseline across the board.
+- Chosen on AAPL out of six candidates: stop flattening at half the limit, and cross only when latency lets inventory overshoot it. Forced shares on AAPL fall from 7.4k to 1.6k (pessimistic), and crossing cost from $528 to $127.
+- Against the 6s timer: better total P&L on 5 of 5 tickers pessimistic and 4 of 5 optimistic (MSFT optimistic is the miss), and better net ¢ per passive share on 5 of 5 at both. AAPL makes money for the first time: +$289 / +$9.
+- Luck check: about half of AAPL's gain is mark-to-market on inventory held while the price drifted, which is one day's price path, not skill. With that term removed it still beats the timer on 5 of 5 tickers at both presets.
+- The Phase B inventory skew was doing almost nothing: at gamma 0.1 it moves quotes about 0.05 ticks at the flatten threshold. Making it 40x stronger helped AAPL a little but far less than removing the early flatten. The early flatten itself was the cost.
+- The size skew had the lowest crossing cost but trades 12% fewer shares at worse per-share prices. After #3, that's the pattern to be suspicious of.
+- Risk not priced here: letting inventory run to the full limit means holding bigger positions through the day. One day of data can't say whether that risk pays on average.
