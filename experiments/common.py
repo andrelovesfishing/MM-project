@@ -21,6 +21,7 @@ class Setup:
     gamma: float = 0.1
     kappa: float = 3.2
     requote_seconds: float = 6.0
+    requote_move_ticks: float | None = None  # also requote when the micro-price moves this far (engine.OnMove)
     latency_events: int = 2
     fill_model: FillModel = FillModel()
 
@@ -35,8 +36,9 @@ def quoter(market: data.Market, setup: Setup, **overrides) -> ASQuoter:
 
 
 def backtest(market: data.Market, strategy, setup: Setup) -> dict:
-    result = engine.run(market, strategy, engine.Timer(setup.requote_seconds), setup.latency_events,
-                        fill_model=setup.fill_model)
+    requote = (engine.Timer(setup.requote_seconds) if setup.requote_move_ticks is None
+               else engine.OnMove(setup.requote_move_ticks, setup.requote_seconds))
+    result = engine.run(market, strategy, requote, setup.latency_events, fill_model=setup.fill_model)
     return metrics.summary(result, market)
 
 

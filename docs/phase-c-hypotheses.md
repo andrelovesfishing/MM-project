@@ -18,6 +18,13 @@ Ground rules, as agreed before Phase A:
 
 **Test:** add an event-driven requote trigger next to `engine.Timer` and compare adverse selection (markouts) and P&L attribution against the timer. Sweep the threshold on AAPL only.
 
+**Result ([event-requote.md](event-requote.md)):** not supported as stated, but the staleness idea was right about something else.
+- Requoting on 1-tick micro-price moves (chosen on AAPL) turned passive quoting from losing 1–2.4¢ a share to about break-even, on all five tickers at both presets.
+- The gain came from **spread at the moment of the fill**, not from less adverse selection afterwards. Adverse selection per share barely moved (3 of 5 tickers better). Stale quotes had been getting hit after the mid had already moved through them.
+- Total P&L improved on 5 of 5 tickers with pessimistic fills but only 1 of 5 with optimistic ones. The extra volume pushes inventory past the flatten threshold far more often: on AAPL, forced-flatten shares rise from about 1.2k to 13k, and crossing cost from $90 to $971.
+- So the bottleneck moves from quote staleness to inventory control. The large-tick stocks (INTC, MSFT) barely requote more, because their micro-price seldom moves a full tick.
+- The old `all_main.py` counts above were never rechecked; this experiment tests the claim directly instead.
+
 ## 2. OFI as a reservation-price skew, not only widening
 
 **Hypothesis:** rolling OFI predicts the mid-price about 50 events ahead (Spearman IC 0.2066 at h=50 on AAPL). Moving both quotes in the predicted direction should beat the current `OFIGuard`, which only widens the side about to be run over.
