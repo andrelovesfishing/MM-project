@@ -484,8 +484,8 @@ def run_backtest(
     for i in range(n):
         t_remaining = max(session_end - ev_time[i], 1.0)
 
-        # --- 0. Cancel handling ---
-        if event_type[i] == 2:
+        # --- 0. Cancel handling (2 = partial cancel, 3 = full delete; deletes are ~98% of cancels) ---
+        if event_type[i] in (2, 3):
             px, sz, d = ev_price[i], ev_size[i], direction[i]
             if our_bid is not None and abs(our_bid.price - px) < 1e-9 and d == 1:
                 our_bid.ahead_volume -= sz
@@ -496,10 +496,13 @@ def run_backtest(
         if event_type[i] in (4, 5):
             px, sz, d = ev_price[i], ev_size[i], direction[i]
 
-            if our_bid is not None and d == -1 and px <= our_bid.price + 1e-9:
+            # LOBSTER trade direction is the side of the resting order that executed:
+            # 1 = buy limit order hit (trade at bid), -1 = sell limit order lifted (trade at ask).
+            # Only the part of the trade beyond the queue ahead of us reaches our order.
+            if our_bid is not None and d == 1 and px <= our_bid.price + 1e-9:
                 our_bid.ahead_volume -= sz
-                if our_bid.ahead_volume <= 0:
-                    fill_size = max(min(our_bid.size, sz - max(int(our_bid.ahead_volume), -sz + our_bid.size)), 1)
+                if our_bid.ahead_volume < 0:
+                    fill_size = int(min(our_bid.size, sz, -our_bid.ahead_volume))
                     prev_inv = state.inventory
                     update_avg_cost_and_realized(state, prev_inv, fill_size, our_bid.price)
                     state.cash -= fill_size * our_bid.price
@@ -509,10 +512,10 @@ def run_backtest(
                     if our_bid.size <= 0:
                         our_bid = None
 
-            if our_ask is not None and d == 1 and px >= our_ask.price - 1e-9:
+            if our_ask is not None and d == -1 and px >= our_ask.price - 1e-9:
                 our_ask.ahead_volume -= sz
-                if our_ask.ahead_volume <= 0:
-                    fill_size = max(min(our_ask.size, sz - max(int(our_ask.ahead_volume), -sz + our_ask.size)), 1)
+                if our_ask.ahead_volume < 0:
+                    fill_size = int(min(our_ask.size, sz, -our_ask.ahead_volume))
                     prev_inv = state.inventory
                     update_avg_cost_and_realized(state, prev_inv, -fill_size, our_ask.price)
                     state.cash += fill_size * our_ask.price
