@@ -1,9 +1,6 @@
 data/
-
 figures/
-
 old_versions/
-
 *.png
-
 *.csv
+.claude
