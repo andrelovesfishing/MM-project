@@ -47,6 +47,14 @@ Ground rules, as agreed before Phase A:
 
 **Test:** all four combinations (fixed / adaptive size × event-count / time cadence) on all five tickers. This shows which change mattered, and on which tickers.
 
+**Result ([size-cadence.md](size-cadence.md)):** not supported. The old diagnosis was wrong on every ticker it named, and the "fix" was mostly trading less.
+- Size is the bigger effect almost everywhere, but not for the reason given. On AAPL, AMZN and GOOG, adaptive sizing cut orders from 200 to 20 shares. The strategy loses money on each share, so trading a tenth of the volume lost about a tenth as much ($5.7k better on AAPL).
+- INTC and MSFT: "adaptive" means 500 shares, more than the fixed 200, and total P&L got *worse*. The old claim that 200 shares never reached the front of their queues doesn't hold on the Phase B simulator: they fill 24k–250k passive shares a day.
+- GOOG: the predicted cadence effect points the wrong way. Requoting every 6s instead of every ~16s (100 events) lost more in total ($387 / $246), because fresher quotes filled more shares of a losing strategy. Per share it did help, by 0.4¢.
+- Per share, cadence has no clean pattern: fresher quotes were better on four tickers and worse on AMZN.
+- The P&L spread across tickers fell from $6.9k to $0.3k (pessimistic), but that is mostly every ticker losing less because of smaller size. It isn't evidence the strategy generalises.
+- The lesson for every other comparison here: while passive quoting loses money per share, total P&L rewards whatever trades less. Judge strategy changes on per-share numbers first.
+
 ## 4. Newey-West-corrected IC t-stats
 
 **Hypothesis:** the OFI IC t-stats (~133 at h=50) are hugely overstated. They treat about 400k overlapping, autocorrelated observations as independent.
