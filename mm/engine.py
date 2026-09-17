@@ -8,7 +8,7 @@ import numpy as np
 
 from mm.accounting import Ledger
 from mm.data import Market
-from mm.queue import ASK, BID, RestingOrder, on_event, queue_ahead, take
+from mm.queue import ASK, BID, on_event, replace_order, take
 from mm.strategy import Quotes, Strategy
 
 
@@ -86,7 +86,7 @@ def _enforce_limit(orders: dict, inventory: int, limit: int):
 def _apply(quotes: Quotes, orders: dict, market: Market, i: int) -> list:
     """Send quotes to the book as it is when they land. A quote that crosses executes at once against
     the far side and rests any remainder. Returns the immediate fills as (side, price, shares, forced).
-    A passive quote replaces the resting order only when the price changes, so it keeps its queue place.
+    A passive quote keeps its queue place when only its size shrinks (mm.queue.replace_order).
     A side with no quote cancels its resting order."""
     books = {BID: (market.bid_px[i], market.bid_sz[i]), ASK: (market.ask_px[i], market.ask_sz[i])}
     taken = []
@@ -98,8 +98,7 @@ def _apply(quotes: Quotes, orders: dict, market: Market, i: int) -> list:
         if crossed:
             taken += [(side, px, qty, q.forced) for px, qty in crossed]
             left = q.size - sum(qty for _, qty in crossed)
-            orders[side] = (RestingOrder(side, q.price, left, queue_ahead(side, q.price, *books[side]), q.forced)
-                            if left else None)
-        elif orders[side] is None or orders[side].price != q.price:
-            orders[side] = RestingOrder(side, q.price, q.size, queue_ahead(side, q.price, *books[side]), q.forced)
+            orders[side] = replace_order(side, None, q.price, left, q.forced, *books[side]) if left else None
+        else:
+            orders[side] = replace_order(side, orders[side], q.price, q.size, q.forced, *books[side])
     return taken

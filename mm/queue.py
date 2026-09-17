@@ -32,6 +32,15 @@ def queue_ahead(side: int, price: int, px_levels, sz_levels) -> int:
     return 0
 
 
+def replace_order(side: int, order: RestingOrder | None, price: int, size: int, forced: bool,
+                  px_levels, sz_levels) -> RestingOrder:
+    """Exchange priority for a replaced quote: same price and no larger size keeps our queue place,
+    a new price or a larger size joins the back of the queue."""
+    if order is not None and order.price == price and size <= order.size:
+        return replace(order, size=size, forced=forced)
+    return RestingOrder(side, price, size, queue_ahead(side, price, px_levels, sz_levels), forced)
+
+
 def take(side: int, limit: int, size: int, px_levels, sz_levels) -> list[tuple[int, int]]:
     """Fills for a marketable order against the opposite side's visible levels, best first,
     at each level's price and no worse than `limit`: [(price, shares)].

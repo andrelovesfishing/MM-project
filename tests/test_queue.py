@@ -1,7 +1,7 @@
 import pytest
 
 from mm.data import BUY, CANCEL, DELETE, EXECUTE, EXECUTE_HIDDEN, HALT, SELL, SUBMIT
-from mm.queue import ASK, BID, RestingOrder, on_event, queue_ahead, take
+from mm.queue import ASK, BID, RestingOrder, on_event, queue_ahead, replace_order, take
 
 P = 1_000_000
 
@@ -117,3 +117,23 @@ def test_marketable_ask_sweeps_bids():
 def test_order_that_does_not_cross_takes_nothing():
     assert take(BID, P - 100, 50, ASKS_PX, ASKS_SZ) == []
     assert take(ASK, P + 100, 50, LEVELS_PX, LEVELS_SZ) == []
+
+
+def test_same_price_smaller_size_keeps_queue_place():
+    assert replace_order(BID, bid(ahead=40, size=20), P, 10, False, LEVELS_PX, LEVELS_SZ) == bid(ahead=40, size=10)
+
+
+def test_same_price_larger_size_goes_to_the_back():
+    assert replace_order(BID, bid(ahead=40, size=20), P, 30, False, LEVELS_PX, LEVELS_SZ) == bid(ahead=300, size=30)
+
+
+def test_new_price_goes_to_the_back():
+    assert replace_order(BID, bid(ahead=40), P - 100, 20, False, LEVELS_PX, LEVELS_SZ) == bid(ahead=400, price=P - 100)
+
+
+def test_replacing_updates_the_forced_flag():
+    assert replace_order(BID, bid(ahead=40), P, 20, True, LEVELS_PX, LEVELS_SZ).forced
+
+
+def test_no_resting_order_joins_the_back():
+    assert replace_order(BID, None, P, 20, False, LEVELS_PX, LEVELS_SZ) == bid(ahead=300)

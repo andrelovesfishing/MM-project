@@ -136,3 +136,18 @@ def test_a_side_left_unquoted_cancels_its_resting_order():
     events = [NOOP, NOOP, hit_bid(1000)]
     r = engine.run(make_market(events, bid_sz=0), BidThenNothing(), engine.Timer(1.0), latency_events=0)
     assert len(r.fills["idx"]) == 0
+
+
+@dataclass
+class GrowingBid:
+    inventory_limit: int = 1000
+
+    def quote(self, market, i, inventory):
+        return Quotes(Quote(BID0, 20 if i == 0 else 40), None)
+
+
+def test_requote_with_a_larger_size_loses_queue_place():
+    # 300 ahead, 100 trade away, then a bigger requote rejoins behind the 300 displayed: 210 more won't reach us.
+    events = [NOOP, hit_bid(100), hit_bid(210)]
+    r = engine.run(make_market(events, bid_sz=300), GrowingBid(), engine.Timer(1.0), latency_events=0)
+    assert len(r.fills["idx"]) == 0
