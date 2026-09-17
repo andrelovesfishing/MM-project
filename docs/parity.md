@@ -47,4 +47,6 @@ These behaviours were ported unchanged so parity could be checked. They look unr
 - **A requote at an unchanged price keeps the old size and forced flag,** so size skew only takes effect when the price moves.
 - **Queue position below the visible book** assumes the 10th level's size is ahead of us.
 - **Touch-snap diagnostics count quotes before a forced flatten replaces them.**
+- **A delayed quote can breach the inventory limit.** The limit pull runs before a pending quote lands, so the quote can re-place a bid right after the limit was hit. Pinned by an `xfail` test.
+- **Requotes faster than the latency starve quotes.** Each new decision replaces the pending one and pushes its landing time back, so if events are 6s or more apart, nothing ever rests. Pinned by an `xfail` test.
 - **Sharpe annualisation** scales by `sqrt(252 * 6.5 * 3600 / n_samples)`, which is not a standard annualisation for 50-event samples.
