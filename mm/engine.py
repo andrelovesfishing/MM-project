@@ -8,7 +8,7 @@ import numpy as np
 
 from mm.accounting import Ledger
 from mm.data import Market
-from mm.queue import ASK, BID, RestingOrder, on_event, queue_ahead
+from mm.queue import ASK, BID, RestingOrder, on_event, queue_ahead, take
 from mm.strategy import Quotes, Strategy
 
 
@@ -58,7 +58,9 @@ def run(market: Market, strategy: Strategy, requote=Timer(6.0), latency_events: 
 
         # Each quote lands after its own latency, in the order sent, like messages to an exchange.
         while in_flight and in_flight[0][0] <= i:
-            _apply(in_flight.popleft()[1], orders, market, i)
+            for side, px, qty, forced in _apply(in_flight.popleft()[1], orders, market, i):
+                ledger.fill(side, px, qty)
+                fills.append((i, side, px, qty, forced))
             _enforce_limit(orders, ledger.inventory, limit)  # the quote was decided before recent fills
 
         if i % sample_every == 0:
@@ -81,11 +83,22 @@ def _enforce_limit(orders: dict, inventory: int, limit: int):
         orders[ASK] = None
 
 
-def _apply(quotes: Quotes, orders: dict, market: Market, i: int):
-    """Replace a resting order only when the price changes, so an unchanged quote keeps its queue place.
+def _apply(quotes: Quotes, orders: dict, market: Market, i: int) -> list:
+    """Send quotes to the book as it is when they land. A quote that crosses executes at once against
+    the far side and rests any remainder. Returns the immediate fills as (side, price, shares, forced).
+    A passive quote replaces the resting order only when the price changes, so it keeps its queue place.
     A side with no quote leaves any resting order in place."""
     books = {BID: (market.bid_px[i], market.bid_sz[i]), ASK: (market.ask_px[i], market.ask_sz[i])}
+    taken = []
     for side, q in ((BID, quotes.bid), (ASK, quotes.ask)):
-        if q is None or (orders[side] is not None and orders[side].price == q.price):
+        if q is None:
             continue
-        orders[side] = RestingOrder(side, q.price, q.size, queue_ahead(side, q.price, *books[side]), q.forced)
+        crossed = take(side, q.price, q.size, *books[-side])
+        if crossed:
+            taken += [(side, px, qty, q.forced) for px, qty in crossed]
+            left = q.size - sum(qty for _, qty in crossed)
+            orders[side] = (RestingOrder(side, q.price, left, queue_ahead(side, q.price, *books[side]), q.forced)
+                            if left else None)
+        elif orders[side] is None or orders[side].price != q.price:
+            orders[side] = RestingOrder(side, q.price, q.size, queue_ahead(side, q.price, *books[side]), q.forced)
+    return taken

@@ -1,7 +1,7 @@
 import pytest
 
 from mm.data import BUY, CANCEL, DELETE, EXECUTE, EXECUTE_HIDDEN, HALT, SELL, SUBMIT
-from mm.queue import ASK, BID, RestingOrder, on_event, queue_ahead
+from mm.queue import ASK, BID, RestingOrder, on_event, queue_ahead, take
 
 P = 1_000_000
 
@@ -96,3 +96,24 @@ def test_queue_ahead_below_visible_book_uses_last_level():
 def test_queue_ahead_ignores_empty_level_sentinels():
     assert queue_ahead(BID, P - 900, [P, -9_999_999_999], [300, 0]) == 0
     assert queue_ahead(ASK, P + 900, [P, 9_999_999_999], [300, 0]) == 0
+
+
+ASKS_PX = [P, P + 100, P + 200]
+ASKS_SZ = [30, 40, 9_999]
+
+
+def test_marketable_bid_sweeps_asks_up_to_its_limit_at_their_prices():
+    assert take(BID, P + 100, 50, ASKS_PX, ASKS_SZ) == [(P, 30), (P + 100, 20)]
+
+
+def test_marketable_order_stops_at_its_limit_price():
+    assert take(BID, P, 50, ASKS_PX, ASKS_SZ) == [(P, 30)]
+
+
+def test_marketable_ask_sweeps_bids():
+    assert take(ASK, P - 100, 350, LEVELS_PX, LEVELS_SZ) == [(P, 300), (P - 100, 50)]
+
+
+def test_order_that_does_not_cross_takes_nothing():
+    assert take(BID, P - 100, 50, ASKS_PX, ASKS_SZ) == []
+    assert take(ASK, P + 100, 50, LEVELS_PX, LEVELS_SZ) == []

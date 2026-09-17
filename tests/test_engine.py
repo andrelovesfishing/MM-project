@@ -94,3 +94,30 @@ def test_a_newer_quote_does_not_delay_one_already_in_flight():
     m = make_market(events, bid_sz=0, times=[0.0, 7.0, 7.5, 8.0])
     r = engine.run(m, FixedQuotes(), engine.Timer(6.0), latency_events=2)
     assert r.fills["idx"].tolist() == [3]
+
+
+@dataclass
+class Flatten:
+    """Short 20 and crossing to buy it back: a forced bid at the ask."""
+    price: int = ASK0
+    size: int = 30
+    inventory_limit: int = 1000
+
+    def quote(self, market, i, inventory):
+        return Quotes(Quote(self.price, self.size, forced=True), None)
+
+
+def test_forced_flatten_executes_at_once_against_the_ask():
+    r = run([NOOP, NOOP], Flatten(size=30), latency_events=0)
+    assert r.fills["idx"].tolist() == [0]
+    assert (r.fills["price"].tolist(), r.fills["size"].tolist(), r.fills["forced"].tolist()) == ([ASK0], [30], [True])
+
+
+def test_forced_flatten_sweeps_deeper_levels_within_its_limit():
+    r = run([NOOP], Flatten(price=ASK0 + 100, size=250), latency_events=0)  # 200 shown per ask level
+    assert list(zip(r.fills["price"].tolist(), r.fills["size"].tolist())) == [(ASK0, 200), (ASK0 + 100, 50)]
+
+
+def test_unfilled_part_of_a_cross_rests_at_its_limit():
+    r = run([NOOP, (EXECUTE, ASK0, 1, BUY)], Flatten(size=230), latency_events=0)
+    assert r.fills["size"].tolist() == [200, 1]

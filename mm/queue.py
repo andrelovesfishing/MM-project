@@ -32,6 +32,21 @@ def queue_ahead(side: int, price: int, px_levels, sz_levels) -> int:
     return 0
 
 
+def take(side: int, limit: int, size: int, px_levels, sz_levels) -> list[tuple[int, int]]:
+    """Fills for a marketable order against the opposite side's visible levels, best first,
+    at each level's price and no worse than `limit`: [(price, shares)].
+    The recorded book doesn't know we took this liquidity, so later events can reuse it."""
+    fills = []
+    for level_px, level_sz in zip(px_levels, sz_levels):
+        if size <= 0 or side * (limit - level_px) < 0:
+            break
+        if level_sz > 0:
+            qty = min(size, int(level_sz))
+            fills.append((int(level_px), qty))
+            size -= qty
+    return fills
+
+
 def on_event(order: RestingOrder, event_type: int, price: int, size: int, direction: int):
     """Apply one market event to our order. Returns (order or None if fully filled, shares filled)."""
     # LOBSTER direction is the side of the book the event happened on. For executions
